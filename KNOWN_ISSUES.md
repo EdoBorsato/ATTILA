@@ -106,10 +106,12 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   non-positive minimum or more than 200 candidate peaks. The fast
   deblender does the same. Which sources are affected was not
   checked.
-- The deblending stage holds all the sources in memory. The pool
-  takes the largest sources first (22 s -> 19 s on the Hydra S
-  mosaic with 8 processes); the wall time is now set by the largest
-  source, 17 s.
+- Deblending stage on the Hydra S mosaic, 8 processes, fast
+  deblender in both cases. Sources given as objects (rectangular
+  tilings, or `packed=False`): 145 s, 5.9 GB at peak, 81923 files
+  and 530 MB on disk. Streaming from the catalogue file (HEALPix):
+  26 s, 2.0 GB, 99 files and 51 MB. The two tables are identical
+  (27307 sources). The wall time is set by the largest source.
 
 ## 5. Open: HEALPix tiling (0.2.0, in development)
 
@@ -145,10 +147,17 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   agreement, but numpy is 17 to 40 times slower on it and
   `scipy.ndimage` refuses it.
 - The detection cutouts of the sources are zero outside the
-  footprint. The deblending stage still saves three files per
-  source.
-- The sources returned by `detect` (`keep_sources=True`) and the
-  deblending stage still hold every source in memory.
+  footprint.
+- A packed catalogue is declared by `catalogue.json`, which lists
+  its files with paths relative to its folder; the folder can be
+  moved as a whole. The file granularity hardly affects zstd on
+  these data: one file per cell is 6% larger than a single archive
+  at level 9, one stream per source 15% larger.
+- With HEALPix tiles `detect` and `deblend` return a container
+  without sources (table and catalogue path only) unless
+  `keep_sources=True`.
+- A deblended child belongs to the cell of its parent, also when
+  its own peak lies in a neighbouring cell.
 - Compared with version 0.1.0 on the central 6000 x 6000 pixels of
   the Hydra S mosaic (threshold 3, 25 pixels, sigma 3): 3210 of the
   3212 sources of 0.1.0 are recovered, 98.3% with an identical
@@ -159,7 +168,6 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   tiles did not cover (102 sources only in the new catalogue).
 - The cell polygons are in (RA, Dec) degrees and are not handled
   across RA = 0.
-- Deblending and properties still run per source, not per cell.
 
 ## 6. Open: comparison scripts (`mtobjects/core`, not tracked)
 

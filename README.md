@@ -159,6 +159,17 @@ The catalogue does not depend on the order or on the margin: a source
 larger than a cell is detected whole and assigned to the cell of its
 peak, stored in the column `healpix_cell`.
 
+The stages work cell by cell and keep nothing in memory: `sources`
+holds the table (`sources.properties`) and the path of the file that
+declares the saved catalogue (`sources.catalogue`). Read the sources
+back with:
+
+```python
+from attila.tiling.sources import Sources
+
+deblended = Sources.load_light("output/deblend/1_100_10")
+```
+
 
 The pipeline is driven by a script that lives next to the data and
 defines the stages with the parameters of that data set. It expects

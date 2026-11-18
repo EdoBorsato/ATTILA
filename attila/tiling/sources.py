@@ -298,6 +298,99 @@ def read_pack(filename, keep_det_arr=True):
     return sources
 
 
+# Name of the file that declares the content of a packed catalogue.
+CATALOGUE_FILE = 'catalogue.json'
+
+
+def write_catalogue(folder, packs, header, properties=None, **info):
+    """
+    Write the file that declares the content of a packed catalogue.
+
+    A packed catalogue is not found by listing a folder: its files
+    are declared, one by one, in `catalogue.json`, with what each of
+    them holds. A stage of the pipeline reads this file to know
+    which packed files to open, and can choose them (for example
+    the cells with the largest sources first) without opening any.
+
+    Parameters
+    ----------
+    folder : str
+        The folder of the catalogue, where the file is written.
+    packs : list of dict
+        One entry per packed file, with at least its `path`, which
+        is stored relative to `folder`. The stages of the
+        pipeline also record `cell_id`, `n_sources` and `max_area`.
+    header : astropy.io.fits.Header
+        The header of the mosaic, written to `header.hdr`.
+    properties : pandas.DataFrame, optional
+        The table of the sources, written to `properties.csv`.
+    **info
+        Other values to record, for example the detection threshold
+        and the step of the terraces. They must be JSON values.
+
+    Returns
+    -------
+    str
+        The path of the catalogue file.
+    """
+    header.tofile(path.join(folder, 'header.hdr'), overwrite=True)
+
+    content = dict(info)
+    content['format'] = 1
+    content['header'] = 'header.hdr'
+
+    if properties is not None:
+        properties.to_csv(path.join(folder, 'properties.csv'))
+        content['properties'] = 'properties.csv'
+
+    content['packs'] = [
+        dict(pack, path=path.relpath(path.abspath(pack['path']), path.abspath(folder))) for pack in packs
+    ]
+
+    filename = path.join(folder, CATALOGUE_FILE)
+
+    with open(filename, 'w') as handle:
+        json.dump(content, handle, indent=1)
+
+    return filename
+
+
+def read_catalogue(filename):
+    """
+    Read the file that declares the content of a packed catalogue.
+
+    Parameters
+    ----------
+    filename : str
+        The path of the catalogue file, or of its folder.
+
+    Returns
+    -------
+    dict
+        The content written by `write_catalogue`, with the paths of
+        the packed files, of the header and of the table made
+        absolute, and the folder of the catalogue in `folder`.
+    """
+    if path.isdir(filename):
+        filename = path.join(filename, CATALOGUE_FILE)
+
+    folder = path.dirname(path.abspath(filename))
+
+    with open(filename) as handle:
+        content = json.load(handle)
+
+    content['folder'] = folder
+    content['header'] = path.join(folder, content['header'])
+
+    if 'properties' in content:
+        content['properties'] = path.join(folder, content['properties'])
+
+    for pack in content['packs']:
+        pack['path'] = path.join(folder, pack['path'])
+
+    return content
+
+
 def Polygon_to_BoundingBox(polygon):
     """
     Convert a shapely polygon to a photutils `BoundingBox`.
@@ -1394,9 +1487,10 @@ class Sources:
         """
         Load a collection saved with `save_light`.
 
-        The sources are read from the `cells` sub-folder of `filename`
-        if it exists (packed layout, see `write_pack`), sorted by
-        label; otherwise from the `sources` sub-folder. If `ids` is None, every source of that folder is
+        The sources are read from the packed files declared in
+        `catalogue.json` (see `write_catalogue`) or, without it,
+        from those of the `cells` sub-folder, sorted by label;
+        otherwise from the `sources` sub-folder. If `ids` is None, every source of that folder is
         loaded once, in sorted order of name. The header is read from
         `header.hdr` and, if `properties.csv` exists, it is loaded in
         the attribute `properties`.
@@ -1422,10 +1516,16 @@ class Sources:
         path_to_sources = path.join(filename, "sources")
         path_to_cells = path.join(filename, "cells")
 
-        if path.isdir(path_to_cells):
-            # Packed layout: one file per cell.
-            for name in tqdm(sorted(os.listdir(path_to_cells))):
-                sources_list += read_pack(path.join(path_to_cells, name), keep_det_arr=keep_det_arr)
+        if path.exists(path.join(filename, CATALOGUE_FILE)) or path.isdir(path_to_cells):
+            # Packed layout: the files declared by the catalogue or,
+            # without it, those of the `cells` sub-folder.
+            if path.exists(path.join(filename, CATALOGUE_FILE)):
+                pack_files = [pack['path'] for pack in read_catalogue(filename)['packs']]
+            else:
+                pack_files = [path.join(path_to_cells, name) for name in sorted(os.listdir(path_to_cells))]
+
+            for pack_file in tqdm(pack_files):
+                sources_list += read_pack(pack_file, keep_det_arr=keep_det_arr)
 
             if ids is not None:
                 wanted = {str(id) for id in ids}

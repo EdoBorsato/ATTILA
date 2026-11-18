@@ -52,6 +52,18 @@
     the two and should be run after updating photutils.
 - `pipelines.deblend` hands the largest sources to the pool first,
   one at a time, and restores the order of the catalogue.
+- Streaming deblending for HEALPix tilings (`_deblend_healpix`):
+  every packed file of the detection is a task; a worker reads it,
+  deblends and measures its sources and writes a packed file of
+  the result. No source is sent between processes and the main
+  process only collects the tables. Hydra S mosaic: 145 s and
+  5.9 GB -> 26 s and 2.0 GB, same table.
+- `catalogue.json` (`write_catalogue`, `read_catalogue`) declares
+  the packed files of a catalogue, with the cell, the number of
+  sources and the largest area of each. The stages hand over this
+  file instead of the sources; `Sources.load_light` reads it.
+- With HEALPix tiles `detect` no longer returns the sources in
+  memory by default (`keep_sources=False`).
 - Packed catalogues: the HEALPix detection saves one zstd file per
   cell (`write_pack`, `read_pack`, folder `cells/`) instead of three
   files per source; `Sources.load_light` reads both layouts. Only

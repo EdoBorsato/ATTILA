@@ -41,7 +41,7 @@ from attila.tiling.healpix import HealpixTiling, LazyDetectionArray, detect_in_c
 from attila.utils.image_utils import gaussian_smooth
 from attila.tiling.tiles import ConvolutionTile, BaseTile, DetectionTile
 from attila.detection.detection import segment
-from attila.tiling.sources import Sources, _same_grid, write_pack
+from attila.tiling.sources import Sources, _same_grid, read_catalogue, read_pack, write_catalogue, write_pack
 from attila.properties.extinction import Extinction
 from attila.properties.properties import Properties
 
@@ -59,7 +59,9 @@ from attila import attila_logger
 from typing import Dict
 
 from attila.deblending.deblending import deblend as photutils_deblend
-from multiprocessing import Pool
+from multiprocessing import Pool, get_all_start_methods, get_context
+
+from astropy.io import fits
 from multiprocessing.pool import ThreadPool
 from os import path
 
@@ -159,6 +161,83 @@ def _snr_smoothed(data_g, data_r, noise_g, noise_r, sigma):
     return gaussian_smooth(snr, sigma)
 
 
+def _measure_sources(sources, field, ext, same_grid, order):
+    """
+    Measure the sources of one cell.
+
+    The images of the sources are cut from the images of the field,
+    the extinction of the grid is assigned and the measurements of
+    `Properties` are run. The image cutouts are then released.
+
+    Parameters
+    ----------
+    sources : Sources
+        The sources of the cell, each with its `cell_id`.
+    field : Field
+        The field with the images of the bands.
+    ext : Extinction
+        The extinction object, with the grid already computed.
+    same_grid : bool
+        Whether the images have the pixel grid of the sources (see
+        `Source.get_data`).
+    order : int
+        The HEALPix order of the tiling, written in the table.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The table of the measurements, one row per source, with the
+        extra columns `healpix_order` and `healpix_cell`.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        for source in sources:
+            source.get_data(field.multibandimages, sources.wcs, same_grid=same_grid)
+
+        props = Properties(sources, field)
+        props.A = ext.apply_grid_to_sources(sources)
+
+        table = props._table()
+
+    table['healpix_order'] = order
+    table['healpix_cell'] = [source.cell_id for source in sources]
+
+    # The images are cut again where they are needed.
+    for source in sources:
+        del source.data
+
+    return table
+
+
+def _pack_record(pack_file, sources):
+    """
+    Describe a packed file for the catalogue.
+
+    Parameters
+    ----------
+    pack_file : str
+        The path of the file.
+    sources : iterable of Source
+        The sources it holds, all of the same cell.
+
+    Returns
+    -------
+    dict
+        The path, the cell, the number of sources and the area of
+        the largest one, which the deblending uses to take the
+        heaviest files first.
+    """
+    sources = list(sources)
+
+    return {
+        'path': pack_file,
+        'cell_id': int(sources[0].cell_id),
+        'n_sources': len(sources),
+        'max_area': int(max(source.area for source in sources)),
+    }
+
+
 def _combine_healpix(field: Field, tiling: HealpixTiling, sigma: float = 2.0, n_workers: int = 4, lazy: bool = True):
     """
     Define the detection array of a field tiled with HEALPix cells.
@@ -248,7 +327,7 @@ def _detect_healpix(
         nconn,
         n_workers: int = 4,
         backend: str = 'processes',
-        keep_sources: bool = True,
+        keep_sources: bool = False,
         det_step: float = 1e-3,
         packed: bool = True,
     ):
@@ -295,12 +374,13 @@ def _detect_healpix(
         `'processes'` or `'threads'`, see `detect_in_cells`. The
         measurements only run in parallel with processes.
     keep_sources
-        If `True` the sources are also kept and returned, with their
-        segments and the cutouts of the detection array; their
-        images are views of the images of the field. If `False`
-        nothing is kept and the returned container only has the
-        table: the sources are read back from the output folder
-        with `Sources.load_light`.
+        If `False` (default) nothing is kept in memory: the returned
+        container has no sources, only the table (`properties`) and
+        the path of the catalogue file (`catalogue`), from which the
+        next stage, or `Sources.load_light`, reads them. If `True`
+        the sources are also returned, with their segments and
+        detection cutouts; their images are views of the images of
+        the field.
     det_step
         The relative step of the terraces of the detection cutouts
         stored in the sources (`detect_in_cells`); None keeps the
@@ -350,32 +430,12 @@ def _detect_healpix(
 
     same_grid = _same_grid(images, header, WCS(header))
 
-    def measure(sources):
-        """Measure the sources of one cell; runs in the workers."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-
-            for source in sources:
-                source.get_data(images, sources.wcs, same_grid=same_grid)
-
-            props = Properties(sources, field)
-            props.A = ext.apply_grid_to_sources(sources)
-
-            table = props._table()
-
-        table['healpix_order'] = tiling.order
-        table['healpix_cell'] = [source.cell_id for source in sources]
-
-        # The images are cut again where they are needed.
-        for source in sources:
-            del source.data
-
-        return table
+    measure = partial(_measure_sources, field=field, ext=ext, same_grid=same_grid, order=tiling.order)
 
     output = f'./output/detection/{threshold}_{nconn}'
     os.makedirs(path.join(output, 'cells' if packed else 'sources'), exist_ok=True)
 
-    tables, kept = [], []
+    tables, kept, packs = [], [], []
 
     # Number of files written for each cell: the sources that were
     # cut by a cutout arrive after those of their cell.
@@ -390,12 +450,14 @@ def _detect_healpix(
             cell_id = sources.sources[0].cell_id
             part = n_files[cell_id] = n_files.get(cell_id, 0) + 1
 
-            write_pack(
+            pack_file = write_pack(
                 path.join(output, 'cells', f'cell_{cell_id}_{part}'),
                 sources,
                 threshold = None if det_step is None else threshold,
                 step = det_step
             )
+
+            packs.append(_pack_record(pack_file, sources))
         else:
             for source in sources:
                 source.save_light(path.join(output, 'sources', f'source_{source.previous_label}_{source.label}'))
@@ -428,9 +490,25 @@ def _detect_healpix(
 
     if tables:
         sources.properties = pd.concat(tables, ignore_index=True)
-        sources.properties.to_csv(path.join(output, 'properties.csv'))
 
-    header.tofile(path.join(output, 'header.hdr'), overwrite=True)
+    if packed:
+        # Declare the files that were written: the next stage reads
+        # them from this list.
+        sources.catalogue = write_catalogue(
+            output,
+            packs,
+            header,
+            properties = getattr(sources, 'properties', None),
+            threshold = threshold,
+            nconn = nconn,
+            det_step = det_step,
+            healpix_order = tiling.order
+        )
+    else:
+        if tables:
+            sources.properties.to_csv(path.join(output, 'properties.csv'))
+
+        header.tofile(path.join(output, 'header.hdr'), overwrite=True)
 
     attila_logger.logger.info("All done!")
 
@@ -711,7 +789,7 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
 
     return sources, ext, field, tiling, threshold, nconn
 
-def _deblend_source(source, nlevels):
+def _deblend_source(source, nlevels, contrast=1/8.):
     """
     Deblend one source and attach the result to it.
 
@@ -739,8 +817,213 @@ def _deblend_source(source, nlevels):
             detection_array=np.asarray(source.det_arr, dtype=np.float32),
             segmap=SegmentationImage(source.label*source.segment.astype(int)),
             nlevels=nlevels,
+            contrast=contrast,
         )
         return source
+
+
+# The arguments of the worker processes of `_deblend_healpix`, which
+# inherit them when forked.
+_SHARED_DEBLEND = None
+
+
+def _deblend_pack(record):
+    """
+    Deblend, measure and save the sources of one packed file.
+
+    The function runs in a worker process. It reads the file,
+    deblends its sources one by one, replaces those that are divided
+    by their children, measures the result and writes it to a packed
+    file with the same name in the output folder. Nothing but the
+    table goes back to the main process.
+
+    A child belongs to the cell of its parent. Its detection cutout
+    is zero outside its own footprint, and its peak is the highest
+    pixel of the detection array on its footprint.
+
+    Parameters
+    ----------
+    record : dict
+        The entry of the packed file in the catalogue.
+
+    Returns
+    -------
+    table : pandas.DataFrame
+        The measurements of the deblended sources of the file.
+    record : dict
+        The entry of the file that was written.
+    """
+    shared = _SHARED_DEBLEND
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        parents = Sources(read_pack(record['path']), shared['header'])
+
+        for source in parents:
+            _deblend_source(source, shared['nlevels'], shared['contrast'])
+
+        deblended = Sources.from_deblend(parents)
+
+    cell_of = {source.label: source.cell_id for source in parents}
+
+    for source in deblended:
+        if hasattr(source, 'deblend'):
+            # Not divided: the parent itself.
+            del source.deblend
+            continue
+
+        source.cell_id = cell_of[source.previous_label]
+        source.det_arr = np.where(source.segment, source.det_arr, 0).astype(np.float32)
+
+        peak_y, peak_x = np.unravel_index(
+            np.argmax(np.where(source.segment, source.det_arr, -np.inf)), source.segment.shape
+        )
+
+        source.peak = (int(source.bbox.iymin + peak_y), int(source.bbox.ixmin + peak_x))
+
+    table = _measure_sources(deblended, shared['field'], shared['ext'], shared['same_grid'], shared['order'])
+
+    name = path.basename(record['path']).split('.')[0]
+
+    pack_file = write_pack(
+        path.join(shared['output'], 'cells', name),
+        deblended,
+        threshold = None if shared['det_step'] is None else shared['threshold'],
+        step = shared['det_step']
+    )
+
+    return table, _pack_record(pack_file, deblended)
+
+
+def _deblend_healpix(
+        sources: Sources,
+        ext: Extinction,
+        field: Field,
+        tiling: HealpixTiling,
+        threshold,
+        nconn,
+        nlevels: int = 10,
+        contrast: float = 1 / 8.,
+        n_workers: int = 8,
+        keep_sources: bool = False,
+    ):
+    """
+    Deblend a packed detection catalogue, one file at a time.
+
+    The stage does not receive the sources: it reads the catalogue
+    file of the detection (`sources.catalogue`), which declares the
+    packed files and the area of the largest source of each. Every
+    file is a task of a pool of forked worker processes
+    (`_deblend_pack`), which reads it, deblends and measures its
+    sources and writes the result in
+    `./output/deblend/<threshold>_<nconn>_<nlevels>/`; the files
+    with the largest sources are taken first. The main process only
+    collects the tables.
+
+    The data in memory are therefore the sources of one file per
+    worker, whatever the size of the field. No source is sent
+    between processes.
+
+    Parameters
+    ----------
+    sources
+        The container returned by `_detect_healpix`, of which only
+        the attribute `catalogue` is used.
+    ext
+        The extinction object of the detection stage.
+    field
+        The field with the images of the bands.
+    tiling
+        The HEALPix tiling.
+    threshold, nconn
+        The parameters of the detection, which name the output.
+    nlevels
+        The number of deblending levels.
+    contrast
+        The minimum fraction of the flux of the parent that a child
+        must hold.
+    n_workers
+        The number of worker processes.
+    keep_sources
+        If `True` the deblended sources are read back and returned;
+        if `False` the returned container only has the table and
+        the path of the catalogue file.
+
+    Returns
+    -------
+    Sources
+        The deblended sources (see `keep_sources`).
+    """
+    global _SHARED_DEBLEND
+
+    attila_logger.logger.info("deblending the data...")
+
+    catalogue = read_catalogue(sources.catalogue)
+
+    header = fits.Header.fromfile(catalogue['header'])
+
+    output = f'./output/deblend/{threshold}_{nconn}_{nlevels}'
+    os.makedirs(path.join(output, 'cells'), exist_ok=True)
+
+    # The files with the largest sources first: they take most of
+    # the time, and none of them should start late.
+    records = sorted(catalogue['packs'], key=lambda record: -record['max_area'])
+
+    _SHARED_DEBLEND = dict(
+        header = header,
+        field = field,
+        ext = ext,
+        same_grid = _same_grid(field.multibandimages, header, WCS(header)),
+        order = tiling.order,
+        nlevels = nlevels,
+        contrast = contrast,
+        output = output,
+        threshold = catalogue.get('threshold'),
+        det_step = catalogue.get('det_step'),
+    )
+
+    try:
+        if n_workers > 1 and 'fork' in get_all_start_methods():
+            with get_context('fork').Pool(n_workers) as pool:
+                results = list(tqdm(pool.imap(_deblend_pack, records, chunksize=1), total=len(records)))
+        else:
+            results = [_deblend_pack(record) for record in tqdm(records)]
+    finally:
+        _SHARED_DEBLEND = None
+
+    properties = pd.concat([table for table, _ in results], ignore_index=True)
+
+    # Catalogue order: the parents by label, each followed by its
+    # children.
+    parent = np.where(properties['previous_label'] > 0, properties['previous_label'], properties['label'])
+
+    properties = properties.iloc[np.lexsort((properties['label'], parent))].reset_index(drop=True)
+
+    catalogue_file = write_catalogue(
+        output,
+        [record for _, record in results],
+        header,
+        properties = properties,
+        threshold = catalogue.get('threshold'),
+        nconn = nconn,
+        det_step = catalogue.get('det_step'),
+        healpix_order = tiling.order,
+        nlevels = nlevels,
+        contrast = contrast
+    )
+
+    if keep_sources:
+        deblended_sources = Sources.load_light(output)
+    else:
+        deblended_sources = Sources([], header)
+
+    deblended_sources.properties = properties
+    deblended_sources.catalogue = catalogue_file
+
+    attila_logger.logger.info("All done!")
+
+    return deblended_sources
 
 
 def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, threshold: int, nconn: int):
@@ -796,6 +1079,9 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
     Sources
         The deblended sources, with their `properties` table.
     """
+
+    if isinstance(tiling, HealpixTiling) and getattr(sources, 'catalogue', None) is not None:
+        return _deblend_healpix(sources, ext, field, tiling, threshold, nconn)
 
     attila_logger.logger.info("deblending the data...")
 
