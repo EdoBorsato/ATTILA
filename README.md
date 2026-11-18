@@ -68,6 +68,7 @@ This repository is under active development.
 | `profiling/` | | Profiling harness for the detection pipeline. |
 | `synphot_filters/` | | DECam, SDSS and Gaia filter transmission curves. |
 | `NOTES_future_features.md` | | Design notes: HEALPix tiling, model-based deblending. |
+| `PLAN_0.3.0.md` | | Proposal for version 0.3.0: scene modelling with scarlet2. |
 | `CHANGELOG.md` | | What changed in each version. |
 | `KNOWN_ISSUES.md` | | Open bugs and inconsistencies, and what was fixed. |
 
