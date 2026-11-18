@@ -1,3 +1,26 @@
+"""
+Interactive inspection of a source and of its AstroPhot model.
+
+This module provides the notebook plots used to prepare (and check)
+the 2D AstroPhot fit of a source, after detection and deblending:
+
+- `PlotTarget` shows the cutout of a `Source` (signal-to-noise image,
+  mask and segment outlines) with a band dropdown.
+- `PlotApModel` shows the data (or the residuals) next to the AstroPhot
+  model image with the windows of its components, with band and data
+  type dropdowns.
+
+Both classes can hand the figure to the editing tools of
+`attila.interactive.masking_segment` to draw / dilate the mask and to
+draw / remove segments.
+
+The images are displayed in signal-to-noise units with a two-part
+colour map split at a surface brightness threshold: a linear
+`coolwarm` scale below `sb_upper` and a logarithmic red-yellow-green
+scale between `sb_upper` and `sb_max` (both in mag / arcsec^2,
+converted to pixel values by `_compute_cps_SB` of
+`attila.packing.interactive`).
+"""
 import astrophot as ap
 
 import numpy as np
@@ -47,10 +70,46 @@ from astropy.convolution import convolve, Gaussian2DKernel
 
 
 def _plot_data(fig, ax, data, noise, sb_func, sb_upper, sb_max):
+    """
+    Show a data image in signal-to-noise units with a split colour map.
+
+    The image `data / noise` is drawn twice on `ax`: pixels up to the
+    `sb_upper` threshold with a linear `coolwarm` map starting at
+    S/N = -3, and pixels above it with a logarithmic map running up to
+    the `sb_max` threshold. The two surface brightness thresholds are
+    converted to pixel values with `sb_func` and to S/N with the median
+    of `noise`. Dashed contours of the S/N image smoothed with a
+    Gaussian of sigma 1.5 pixels are overplotted at 10 logarithmic
+    levels between S/N = 2 and the `sb_max` threshold; this step reads
+    `.value` of the threshold, so it expects an `astropy` quantity.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure of `ax` (only used by the commented-out colour bars).
+    ax : matplotlib.axes.Axes
+        The axis to draw on.
+    data : numpy.ndarray
+        The image, shape `(n_rows, n_cols)`, in the flux units of the
+        zero point used by `sb_func`.
+    noise : numpy.ndarray
+        The noise (RMS) map of `data`, same shape and units.
+    sb_func : callable
+        A function called as `sb_func(SB=value)` that converts a surface
+        brightness in mag / arcsec^2 to a pixel value.
+    sb_upper : float
+        The surface brightness, in mag / arcsec^2, at which the colour
+        map is split (the fainter of the two thresholds).
+    sb_max : float
+        The surface brightness, in mag / arcsec^2, at which the upper
+        colour map saturates (the brighter threshold).
+    """
 
     threshold_upper = sb_func(SB=sb_upper)
     threshold_max = sb_func(SB=sb_max)
 
+    # The upper colour map starts from the red end of `coolwarm`, so the
+    # two maps join without a colour jump at the threshold.
     bottom = mcmaps['coolwarm']
     top_parent = mcmaps['RdYlGn']
     color_list = [
@@ -63,9 +122,12 @@ def _plot_data(fig, ax, data, noise, sb_func, sb_upper, sb_max):
     
     top = mcolors.LinearSegmentedColormap.from_list("top", color_list, N=256)
 
+    # Convert the thresholds from pixel values to signal-to-noise.
     threshold_upper_SNR = threshold_upper / np.nanmedian(noise)
     threshold_max_SNR = threshold_max / np.nanmedian(noise)
 
+    # The lower layer is clipped at the threshold; the upper layer,
+    # drawn on top, only shows the pixels above it.
     img = data/noise
     img_bot = np.where(img <= threshold_upper_SNR, img, threshold_upper_SNR)
     im1 = ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
@@ -79,6 +141,7 @@ def _plot_data(fig, ax, data, noise, sb_func, sb_upper, sb_max):
     # ax.set_ylim(-0.1, data.shape[0]-0.5)
     ax.tick_params(axis='both', which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
 
+    # Overplot contours of the smoothed signal-to-noise image.
     kernel = Gaussian2DKernel(x_stddev=1.5, y_stddev=1.5)
 
     convolved_image = convolve(img, kernel, boundary='extend')
@@ -99,6 +162,19 @@ def _plot_data(fig, ax, data, noise, sb_func, sb_upper, sb_max):
 
 
 def _plot_mask(fig, ax, mask):
+    """
+    Overlay the masked pixels of a mask as a translucent grey layer.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure of `ax` (not used).
+    ax : matplotlib.axes.Axes
+        The axis to draw on.
+    mask : numpy.ndarray
+        The mask, shape `(n_rows, n_cols)`; pixels `> 0` are shown and
+        the others are transparent.
+    """
 
     plot_mask = np.where(mask > 0, mask, np.nan)
 
@@ -107,6 +183,24 @@ def _plot_mask(fig, ax, mask):
     ax.tick_params(axis='both', which='both', bottom=False, left=False, labelbottom=False, labelleft=False)
 
 def _plot_segment(fig, ax, segment):
+    """
+    Draw the outline of every segment of a segmentation map.
+
+    The segments are converted to polygons with
+    `_get_polygons_from_segment` and shifted by half a pixel so that
+    they line up with an `imshow` of the same cutout. Each polygon is
+    hatched with a colour of the default cycle (`C0`, `C1`, ...). The
+    axis limits are set to the extent of the map.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure of `ax` (not used).
+    ax : matplotlib.axes.Axes
+        The axis to draw on.
+    segment : numpy.ndarray
+        The segmentation map, shape `(n_rows, n_cols)`; 0 is background.
+    """
 
     ax.set_aspect('equal')
 
@@ -124,6 +218,31 @@ def _plot_segment(fig, ax, segment):
 
 
 def _plot_window(ax, window, **kwargs):
+    """
+    Draw the rectangular window of an AstroPhot model component.
+
+    The window centre is converted from arcsec to pixels by dividing by
+    the diagonal terms of the window pixel scale matrix, then the
+    rectangle of the window is added to `ax`.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axis to draw on.
+    window : astrophot.image.Window
+        The window of the model component.
+    **kwargs
+        Extra keyword arguments passed to `matplotlib.pyplot.Rectangle`.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The input axis.
+    center_pix : list of float
+        The (x, y) centre of the window in pixels.
+    size : tuple
+        The (dx, dy) size of the window in pixels.
+    """
 
     dx = window.pixel_shape[0].detach().cpu().numpy()
     dy = window.pixel_shape[1].detach().cpu().numpy()
@@ -142,6 +261,34 @@ def _plot_window(ax, window, **kwargs):
     return ax, center_pix, (dx, dy)
 
 def _plot_model(fig, ax, model_image, noise, sb_func, sb_upper, sb_max):
+    """
+    Show a model image with the split colour map of `_plot_data`.
+
+    The display is the same as in `_plot_data`, except that the model
+    is divided by the median of `noise` (a single number) instead of
+    the noise map pixel by pixel.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure of `ax` (not used).
+    ax : matplotlib.axes.Axes
+        The axis to draw on.
+    model_image : numpy.ndarray
+        The model image, shape `(n_rows, n_cols)`, in the same units as
+        the data.
+    noise : numpy.ndarray
+        The noise (RMS) map of the data, same shape.
+    sb_func : callable
+        A function called as `sb_func(SB=value)` that converts a surface
+        brightness in mag / arcsec^2 to a pixel value.
+    sb_upper : float
+        The surface brightness, in mag / arcsec^2, at which the colour
+        map is split.
+    sb_max : float
+        The surface brightness, in mag / arcsec^2, at which the upper
+        colour map saturates.
+    """
 
     threshold_upper = sb_func(SB=sb_upper)
     threshold_max = sb_func(SB=sb_max)
@@ -184,6 +331,32 @@ def _plot_model(fig, ax, model_image, noise, sb_func, sb_upper, sb_max):
 
 
 def _plot_residual(fig, ax, residual, noise, sb_func, sb_upper, sb_max):
+    """
+    Show a residual image with the split colour map of `_plot_data`.
+
+    The image `residual / noise` is displayed exactly as `_plot_data`
+    displays `data / noise`. The function is not called in this module.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure of `ax` (only used by the commented-out colour bars).
+    ax : matplotlib.axes.Axes
+        The axis to draw on.
+    residual : numpy.ndarray
+        The data minus model image, shape `(n_rows, n_cols)`.
+    noise : numpy.ndarray
+        The noise (RMS) map of the data, same shape.
+    sb_func : callable
+        A function called as `sb_func(SB=value)` that converts a surface
+        brightness in mag / arcsec^2 to a pixel value.
+    sb_upper : float
+        The surface brightness, in mag / arcsec^2, at which the colour
+        map is split.
+    sb_max : float
+        The surface brightness, in mag / arcsec^2, at which the upper
+        colour map saturates.
+    """
 
     threshold_upper = sb_func(SB=sb_upper)
     threshold_max = sb_func(SB=sb_max)
@@ -234,7 +407,55 @@ def _plot_residual(fig, ax, residual, noise, sb_func, sb_upper, sb_max):
 
 
 class PlotTarget:
+    """
+    Two-panel interactive view of a source cutout.
+
+    The left panel shows the signal-to-noise image of the selected band
+    with the mask on top; the right panel shows the segment outlines
+    with the same mask. Creating the object opens the figure and
+    displays a dropdown to change band. The `draw_mask`, `dilate_mask`,
+    `draw_segment` and `remove_segment` methods redraw the figure and
+    return an editing object of `attila.interactive.masking_segment`,
+    whose handler the caller must then connect to the canvas.
+
+    Attributes
+    ----------
+    source : Source
+        The source being displayed.
+    field : Field
+        The field the source belongs to (zero points, pixel scales).
+    sb_upper : float
+        The surface brightness at which the colour map is split,
+        25 mag / arcsec^2.
+    sb_max : float
+        The surface brightness at which the colour map saturates,
+        23.5 mag / arcsec^2.
+    fig, axs
+        The matplotlib figure and its two axes.
+    current_band : str
+        The band being displayed.
+    dropdown_band : ipywidgets.Dropdown
+        The band selector.
+    data, noise : numpy.ndarray
+        The image and noise cutouts of the current band.
+    segment, mask : numpy.ndarray
+        The segmentation map and the mask of the source (references to
+        the arrays stored on `source`).
+    """
     def __init__(self, source, field):
+        """
+        Open the figure, display the band dropdown and plot the source.
+
+        Parameters
+        ----------
+        source : Source
+            The source to display. It must carry per-band image cutouts
+            in `source.data` (with `data` and `noise`), a `segment` map
+            and a `mask` array.
+        field : Field
+            The field of the source; it must have the `zpt` attribute
+            needed by `_compute_cps_SB`.
+        """
 
         self.source = source
         self.field = field
@@ -266,6 +487,14 @@ class PlotTarget:
         
 
     def load_band(self, band):
+        """
+        Load the cutouts of a band from the source and redraw.
+
+        Parameters
+        ----------
+        band : str
+            The band to display.
+        """
 
         self.data = self.source.data[band].data
         self.segment = self.source.segment
@@ -277,6 +506,15 @@ class PlotTarget:
         self.plot()
 
     def monitor_band(self, change):
+        """
+        React to the band dropdown and reload when the band changes.
+
+        Parameters
+        ----------
+        change : dict
+            The ipywidgets change notification; `change['new']` is the
+            selected band.
+        """
 
         new_band = change['new']
         if new_band != self.current_band:
@@ -285,6 +523,7 @@ class PlotTarget:
             self.load_band(new_band)
 
     def plot(self):
+        """Draw the S/N image, the segment outlines and the mask."""
 
         sb_func = partial(_compute_cps_SB, field=self.field, band=self.current_band)
 
@@ -319,6 +558,28 @@ class PlotTarget:
         self.fig.canvas.draw()
 
     def draw_mask(self, zoom=(False, 100)):
+        """
+        Redraw the figure and return a tool to draw mask polygons.
+
+        Both axes are cleared, their limits are set and the source is
+        plotted again. The limits are the cutout size enlarged by 10% on
+        each side, or a box of side `zoom[1]` around the centre when
+        `zoom[0]` is true; the x limits are computed from
+        `data.shape[0]` and the y limits from `data.shape[1]`.
+
+        Parameters
+        ----------
+        zoom : tuple
+            `(flag, size)`: if `flag` is true the view is restricted to
+            a box of `size` pixels around the cutout centre.
+
+        Returns
+        -------
+        InteractiveMaskDrawer
+            The drawer bound to the left (data) axis; connect its
+            `on_click_draw` to `button_press_event` and call `to_mask()`
+            when done.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -340,6 +601,16 @@ class PlotTarget:
         return self.draw_mask_handle
     
     def dilate_mask(self):
+        """
+        Redraw the figure and return a tool to dilate mask blobs.
+
+        Returns
+        -------
+        InteractiveMaskDilator
+            The dilator bound to the left (data) axis; connect its
+            `on_click_dilate` to `button_press_event` and call
+            `to_mask()` when done.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -350,6 +621,27 @@ class PlotTarget:
         return self.dilate_mask_handle
     
     def draw_segment(self, zoom=(False, 100)):
+        """
+        Redraw the figure and return a tool to draw new segments.
+
+        Both axes are cleared and the source is plotted again. The axis
+        limits are only set when `zoom[0]` is true, to a box of side
+        `zoom[1]` around the centre of the 10% enlarged cutout (x
+        limits from `data.shape[0]`, y limits from `data.shape[1]`).
+
+        Parameters
+        ----------
+        zoom : tuple
+            `(flag, size)`: if `flag` is true the view is restricted to
+            a box of `size` pixels around the cutout centre.
+
+        Returns
+        -------
+        InteractiveSegmentDrawer
+            The drawer bound to the left (data) axis; connect its
+            `on_click_draw` to `button_press_event` and call
+            `to_segment()` when done.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -371,6 +663,16 @@ class PlotTarget:
         return self.draw_segment_handle
     
     def remove_segment(self):
+        """
+        Redraw the figure and return a tool to delete segments.
+
+        Returns
+        -------
+        InteractiveSegmentSelector
+            The selector bound to the right (segment) axis; connect its
+            `on_click_remove` to `button_press_event`. It edits the
+            segmentation map of the source in place.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -383,7 +685,65 @@ class PlotTarget:
 
 
 class PlotApModel:
+    """
+    Two-panel interactive view of a source and its AstroPhot model.
+
+    The left panel shows the data, or the data minus model residuals,
+    of the selected band in signal-to-noise units with the mask on top.
+    The right panel shows the model image with the window and the name
+    of every model component, the segment outlines and the mask.
+    Creating the object opens the figure and displays two dropdowns
+    (band and data type). The editing methods are the same as in
+    `PlotTarget`.
+
+    Attributes
+    ----------
+    results : dict
+        The fit products per band: `results[band]['target']` is the
+        AstroPhot target image and `results[band]['model']` the group
+        model.
+    source : Source
+        The source being displayed.
+    field : Field
+        The field the source belongs to.
+    sb_upper, sb_max : float
+        The surface brightness thresholds of the colour map, 25 and
+        23.5 mag / arcsec^2.
+    fig, axs
+        The matplotlib figure and its two axes.
+    current_band : str
+        The band being displayed.
+    current_data_type : str
+        `'data'` or `'residuals'`.
+    target, model
+        The AstroPhot target image and model of the current band.
+    data : numpy.ndarray
+        The image shown in the left panel (data or residuals).
+    model_image : numpy.ndarray
+        The model evaluated on the target pixel grid.
+    noise, segment, mask : numpy.ndarray
+        The noise cutout of the current band, the segmentation map and
+        the mask of the source.
+    """
     def __init__(self, results, source, field):
+        """
+        Open the figure, display the dropdowns and plot the model.
+
+        The mask of the source is assigned to the `mask` of the target
+        image of every band, so `results` is modified in place.
+
+        Parameters
+        ----------
+        results : dict
+            The fit products, indexed as `results[band]['target']` and
+            `results[band]['model']`.
+        source : Source
+            The fitted source, with per-band cutouts in `source.data`, a
+            `segment` map and a `mask` array.
+        field : Field
+            The field of the source; it must have the `zpt` attribute
+            needed by `_compute_cps_SB`.
+        """
 
         self.results = results
         self.source = source
@@ -403,7 +763,7 @@ class PlotApModel:
 
         self.current_band = sorted(self.source.data.bands)[0]
 
-        # dropdown for the band selection
+        # Dropdown for the band selection.
 
         self.dropdown_band = widgets.Dropdown(
             options=sorted(self.source.data.bands),
@@ -414,7 +774,7 @@ class PlotApModel:
         display(self.dropdown_band)
         self.dropdown_band.observe(self.monitor_band, names='value')
 
-        # dropdown for the data type selection
+        # Dropdown for the data type selection.
 
         self.current_data_type = 'data'
 
@@ -431,6 +791,14 @@ class PlotApModel:
         
 
     def load_band(self):
+        """
+        Load the target and the model of the current band and redraw.
+
+        The model of the band is attached to the target, evaluated on an
+        empty model image of the target and converted to a numpy array.
+        The image to show is the target data, or the target data minus
+        the model image when the data type is `'residuals'`.
+        """
 
         self.target = self.results[self.current_band]['target']
 
@@ -440,7 +808,8 @@ class PlotApModel:
         self.model = self.results[self.current_band]['model']
         self.model.target = self.target
 
-        # define the model_image
+        # Define the model image by sampling the model on the target
+        # grid.
 
         base_image = self.target.model_image()
         model_total = self.model(image=base_image)
@@ -458,6 +827,15 @@ class PlotApModel:
         self.plot()
 
     def monitor_band(self, change):
+        """
+        React to the band dropdown and reload when the band changes.
+
+        Parameters
+        ----------
+        change : dict
+            The ipywidgets change notification; `change['new']` is the
+            selected band.
+        """
 
         new_band = change['new']
         if new_band != self.current_band:
@@ -466,6 +844,15 @@ class PlotApModel:
             self.load_band()
 
     def monitor_data_type(self, change):
+        """
+        React to the data type dropdown and reload when it changes.
+
+        Parameters
+        ----------
+        change : dict
+            The ipywidgets change notification; `change['new']` is
+            `'data'` or `'residuals'`.
+        """
 
         new_data_type = change['new']
         if new_data_type != self.current_data_type:
@@ -475,9 +862,17 @@ class PlotApModel:
 
     
     def plot(self):
+        """
+        Draw the data / residuals and the model with its windows.
+
+        Left axis: the current image in S/N units and the mask. Right
+        axis: the model image, one labelled rectangle per component of
+        the model (its AstroPhot window), the segment outlines and the
+        mask.
+        """
         sb_func = partial(_compute_cps_SB, field=self.field, band=self.current_band)
 
-        # plot the first axis
+        # Plot the first axis.
 
         _plot_data(
             fig=self.fig, 
@@ -495,7 +890,7 @@ class PlotApModel:
             mask=self.mask
         )
 
-        # plot the second axis
+        # Plot the second axis.
 
         _plot_model(
             fig=self.fig, 
@@ -507,6 +902,8 @@ class PlotApModel:
             sb_max=self.sb_max
         )
 
+        # Draw the window of every model component, labelled with the
+        # component name beyond its upper right corner.
         for name, _model in self.results[self.current_band]['model'].models.items():
 
             window = _model.window
@@ -546,6 +943,28 @@ class PlotApModel:
 
 
     def draw_mask(self, zoom=(False, 100)):
+        """
+        Redraw the figure and return a tool to draw mask polygons.
+
+        Both axes are cleared, their limits are set and the figure is
+        plotted again. The limits are the cutout size enlarged by 10% on
+        each side, or a box of side `zoom[1]` around the centre when
+        `zoom[0]` is true; the x limits are computed from
+        `data.shape[0]` and the y limits from `data.shape[1]`.
+
+        Parameters
+        ----------
+        zoom : tuple
+            `(flag, size)`: if `flag` is true the view is restricted to
+            a box of `size` pixels around the cutout centre.
+
+        Returns
+        -------
+        InteractiveMaskDrawer
+            The drawer bound to the left (data) axis; connect its
+            `on_click_draw` to `button_press_event` and call `to_mask()`
+            when done.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -567,6 +986,16 @@ class PlotApModel:
         return self.draw_mask_handle
     
     def dilate_mask(self):
+        """
+        Redraw the figure and return a tool to dilate mask blobs.
+
+        Returns
+        -------
+        InteractiveMaskDilator
+            The dilator bound to the left (data) axis; connect its
+            `on_click_dilate` to `button_press_event` and call
+            `to_mask()` when done.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -577,6 +1006,27 @@ class PlotApModel:
         return self.dilate_mask_handle
     
     def draw_segment(self, zoom=(False, 100)):
+        """
+        Redraw the figure and return a tool to draw new segments.
+
+        Both axes are cleared and the figure is plotted again. The axis
+        limits are only set when `zoom[0]` is true, to a box of side
+        `zoom[1]` around the centre of the 10% enlarged cutout (x
+        limits from `data.shape[0]`, y limits from `data.shape[1]`).
+
+        Parameters
+        ----------
+        zoom : tuple
+            `(flag, size)`: if `flag` is true the view is restricted to
+            a box of `size` pixels around the cutout centre.
+
+        Returns
+        -------
+        InteractiveSegmentDrawer
+            The drawer bound to the left (data) axis; connect its
+            `on_click_draw` to `button_press_event` and call
+            `to_segment()` when done.
+        """
 
         [ax.clear() for ax in self.axs]
 
@@ -598,6 +1048,16 @@ class PlotApModel:
         return self.draw_segment_handle
     
     def remove_segment(self):
+        """
+        Redraw the figure and return a tool to delete segments.
+
+        Returns
+        -------
+        InteractiveSegmentSelector
+            The selector bound to the right (model) axis; connect its
+            `on_click_remove` to `button_press_event`. It edits the
+            segmentation map of the source in place.
+        """
 
         [ax.clear() for ax in self.axs]
 

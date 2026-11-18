@@ -1,3 +1,18 @@
+"""
+Tile containers holding the multi-band data of one sky tile.
+
+A tile is the unit of work of the detection pipeline: `Tiling`
+(`attila.tiling.tilingrid`) creates one tile object per sky tile,
+fills it with the cutouts of the full-image arrays and, once the
+tile has been processed, pastes its results back into the mosaic.
+
+`BaseTile` is the generic container. `ConvolutionTile` and
+`DetectionTile` add the methods that apply a smoothing function and
+a detection function to the detection array of the tile.
+
+`BaseTile` is a near-duplicate of the older
+`attila.abstract.abstract_things.BaseBox`.
+"""
 import numpy as np
 
 # from abc import ABC, abstractmethod, abstractproperty, abstractclassmethod
@@ -17,6 +32,41 @@ from photutils.segmentation import SegmentationImage
 import json
 
 class BaseTile():
+    """
+    A container for the multi-band data of one tile of the mosaic.
+
+    The object stores, for every band, a dictionary of named 2D arrays
+    (for example the science data, the noise, the detection array or a
+    segmentation map) together with the registration information (WCS)
+    of each array. It can be written to and read from a folder, cropped
+    of its overlap region and queried for a subset of its data.
+
+    This class is a near-duplicate of the older `BaseBox` of
+    `attila.abstract.abstract_things`. The differences are that here
+    `add_data` also stores the registration information and accepts
+    lists, and that there is no `add_reg` method.
+
+    Attributes
+    ----------
+    shape : tuple
+        The shape of the tile, as passed to the constructor.
+    overlap : float or int
+        The overlap with the neighbouring tiles.
+    bands : list of str
+        The names of the bands.
+    working_bands : list of str
+        Initially the same list as `bands`.
+    index : int
+        The index identifying the tile in the tiling.
+    data2D : dict
+        The arrays, as `data2D[band][key]`.
+    data_keywords : list of str
+        The names (`key`) of the arrays added so far, over all bands.
+    reg : dict
+        The registration information, as `reg[band][key]`.
+    metadata : dict
+        The summary dictionary written to `metadata.json`.
+    """
 
     def __init__(self, 
                  shape, 
@@ -24,6 +74,24 @@ class BaseTile():
                  bands, 
                  index, 
                  ) -> None:
+        """
+        Store the geometry and create the empty data containers.
+
+        Parameters
+        ----------
+        shape : tuple
+            The shape of the tile. `Tiling.get_tile_data` passes the sky
+            shape in degrees; `remove_overlap` treats it as a shape in
+            pixels.
+        overlap : float or int
+            The overlap with the neighbouring tiles.
+            `Tiling.get_tile_data` passes it in degrees;
+            `remove_overlap` uses it as a number of pixels.
+        bands : list of str
+            The names of the bands.
+        index : int
+            The index identifying the tile in the tiling.
+        """
         
         self.shape = shape
         self.overlap = overlap
@@ -45,21 +113,38 @@ class BaseTile():
         
     @property
     def metadata(self):
+        """The metadata dictionary of the object."""
         return self._metadata
     
     @metadata.setter
     def metadata(self, metadata):
+        """Set the metadata dictionary."""
         self._metadata = metadata
 
     @metadata.getter
     def metadata(self):
+        """
+        Return the metadata dictionary, building it on first access.
+
+        If no metadata have been set, a dictionary with the keys
+        `index`, `shape`, `bands`, `overlap` (cast to an integer) and
+        `data_keywords` is created from the current attributes and
+        cached. Later changes of the attributes are not propagated to
+        the cached dictionary, except for `data_keywords`, which is
+        stored by reference.
+
+        Returns
+        -------
+        dict
+            The metadata dictionary.
+        """
 
         if self._metadata is None:
-            self._metadata = {"index": self.index,  # This is a list of two integers
-                            "shape": tuple(self.shape),  # This is a list of two integers
-                            "bands": self.bands,  # This is a list of strings
-                            "overlap": int(self.overlap),  # This is an integer
-                            "data_keywords": self.data_keywords  # This is a list of strings
+            self._metadata = {"index": self.index,  # The tile index.
+                            "shape": tuple(self.shape),  # Two values.
+                            "bands": self.bands,  # A list of strings.
+                            "overlap": int(self.overlap),  # An integer.
+                            "data_keywords": self.data_keywords  # A list of strings.
                             }
 
         return self._metadata
@@ -70,6 +155,26 @@ class BaseTile():
             key: Union[List[str], str],
             arr: Union[List[ArrayLike], ArrayLike],
             reg: Optional[Union[List[WCS], WCS]]=None):
+        """
+        Store one or more arrays, with their registration, for a band.
+
+        If `key`, `arr` and `reg` are all lists, they are stored element
+        by element; otherwise they are stored as a single entry. An
+        existing entry with the same key is overwritten. New keys are
+        appended to `data_keywords`.
+
+        Parameters
+        ----------
+        band
+            The band the data belong to.
+        key
+            The name, or list of names, under which the data are stored.
+        arr
+            The 2D array, or list of 2D arrays, with axes `(y, x)`.
+        reg
+            The registration information of the array (its WCS), or a
+            list of them. If None, None is stored in `reg[band][key]`.
+        """
 
         if (isinstance(key, List) and isinstance(arr, List) and isinstance(reg, List)):
             for _key, _arr, _reg in zip(key, arr, reg):
@@ -86,9 +191,27 @@ class BaseTile():
             if key not in self.data_keywords:
                 self.data_keywords.append(key)
 
-    # This thing might be outdated. They still might be useful for 'full control'
-    # or higher customization purposes. I might want to a have a pickling system though
+    # TODO: `to_folder` and `from_folder` might be outdated. They might
+    # still be useful for "full control" or higher customisation
+    # purposes. A pickling system might be preferable though.
     def to_folder(self, folder_path):
+        """
+        Write the metadata and the arrays to a folder tree.
+
+        The layout is `<folder_path>/<index>/metadata.json` plus one
+        sub-folder per band containing one file per data keyword:
+        `<key>.npy` (unsigned 32-bit integers) if the array is a
+        photutils `SegmentationImage`, otherwise `<key>.fits` (32-bit
+        floats) with a header built from the WCS stored in
+        `reg[band]["wcs"]`. Missing folders are created (one level at a
+        time) and existing FITS files are overwritten.
+
+        Parameters
+        ----------
+        folder_path : str
+            The existing folder in which the `<index>` folder is
+            created.
+        """
 
         box_path = path.join(folder_path, f"{self.index}")
 
@@ -117,6 +240,30 @@ class BaseTile():
 
     @classmethod
     def from_folder(cls, folder_path, index):
+        """
+        Build an object from a folder written by `to_folder`.
+
+        The constructor arguments (`shape`, `overlap`, `bands`, `index`)
+        are taken from `metadata.json` and the full metadata dictionary
+        is attached to the new object. For every band and every data
+        keyword, the key `"segmap"` is read from `<key>.npy` and wrapped
+        in a photutils `SegmentationImage`; any other key is read from
+        `<key>.fits` as 32-bit floats. After each key the WCS built from
+        the last FITS header read is registered with `add_reg` under the
+        name `"wcs"`.
+
+        Parameters
+        ----------
+        folder_path : str
+            The folder containing the `<index>` folder.
+        index : int
+            The index of the tile to load.
+
+        Returns
+        -------
+        BaseTile
+            The loaded object (an instance of `cls`).
+        """
 
         box_path = path.join(folder_path, f"{index}")
 
@@ -137,6 +284,7 @@ class BaseTile():
                 data_path = path.join(box_band_path, f"{key}")
 
                 if key == "segmap":
+                    # Segmentation maps are stored as .npy files.
                     # segmap_data = fits.getdata(data_path)
 
                     segmap_data = np.load(data_path + ".npy")
@@ -153,17 +301,39 @@ class BaseTile():
 
         return box
     
-    """
-    For now I only remove overlaps on the right and bottom sides
-    of the array (this is the most natural way of doing it given 
-    how the boxes are computed). If I will change the way the 
-    overlap is defined I can consider changing how the overlaps
-    are thrown away. 
-    """
+    # For now only the overlaps on the right and bottom sides of the
+    # array are removed (this is the most natural way of doing it given
+    # how the boxes are computed). If the way the overlap is defined
+    # changes, how the overlaps are thrown away can be reconsidered.
 
-
-#this method should be placed in a different place with customized methods
+    # TODO: move this method somewhere else, together with other
+    # customised methods.
     def remove_overlap(self, directions):
+        """
+        Crop the overlap region from the given sides of all arrays.
+
+        Every array of every band is sliced in place, removing `overlap`
+        rows or columns for each requested direction: `"top"` removes
+        the first rows, `"bottom"` the last rows, `"left"` the first
+        columns and `"right"` the last columns (rows are the first array
+        axis). `overlap` is used here as a number of pixels. For a
+        `SegmentationImage` the `data` attribute is replaced.
+
+        Afterwards `shape` is reduced by `overlap` along both axes,
+        whatever the directions requested, `overlap` is set to 0 and the
+        metadata are updated accordingly.
+
+        Parameters
+        ----------
+        directions : list of str
+            The sides to crop, among `"top"`, `"bottom"`, `"left"` and
+            `"right"`.
+
+        Raises
+        ------
+        ValueError
+            If `overlap` is 0.
+        """
         
         if self.overlap != 0:
 
@@ -200,9 +370,24 @@ class BaseTile():
             keywords: List[str],
             ):
         """
-        extract data as dict{dict} from a list of bands and a list of keywords
-        assuming that either bands or keywords can be a list of a single element, 
-        but not both at the same time
+        Return a subset of the stored arrays as a nested dictionary.
+
+        Either `bands` or `keywords` can be a list with a single
+        element, but the intended use is not to have both of them so at
+        the same time.
+
+        Parameters
+        ----------
+        bands
+            The bands to extract.
+        keywords
+            The names of the arrays to extract for every band.
+
+        Returns
+        -------
+        dict
+            The arrays as `extracted[band][keyword]`. They are
+            references to the stored arrays, not copies.
         """
         exctracted_data={}
         for band in bands:
@@ -213,32 +398,89 @@ class BaseTile():
 
         return exctracted_data
     
-"""
-BlaBla
-"""
 
 class ConvolutionTile(BaseTile):
+    """
+    A tile whose detection array can be convolved.
+
+    It is used in the smoothing step of the detection pipeline, where
+    the detection array of each tile is convolved (for example with a
+    Gaussian kernel) before the sources are detected.
+    """
 
     def apply_convolution_function(self, band, convolution_function):
+        """
+        Replace the detection array of a band with its convolution.
+
+        Parameters
+        ----------
+        band : str
+            The band whose `"detection_array"` is convolved.
+        convolution_function : callable
+            The function taking the 2D detection array and returning the
+            convolved array.
+
+        Raises
+        ------
+        ValueError
+            If no `"detection_array"` has been added to the tile.
+        """
 
         if 'detection_array' not in self.data_keywords:
             raise ValueError("Detection array not found in data keywords")
 
         self.add_data(band, "detection_array",  convolution_function(self.data2D[band]["detection_array"]))
 
-"""
-BlaBla
-"""
 
 class DetectionTile(BaseTile):
+    """
+    A tile on which the source detection is run.
+
+    It is used in the detection step of the pipeline, where a detection
+    function (for example a thresholding with photutils
+    `detect_sources`) turns the detection array of each tile into a
+    segmentation map.
+    """
 
     def fix_zeros(self, fill):
+        """
+        Replace the zeros of the detection array with a fill value.
+
+        The replacement is applied to the `"detection_array"` of every
+        band of the tile.
+
+        Parameters
+        ----------
+        fill : float
+            The value assigned to the pixels equal to 0.
+        """
 
         for band in self.bands:
             self.data2D[band]["detection_array"] = np.where(self.data2D[band]["detection_array"]==0, 
                                                             fill, self.data2D[band]["detection_array"])
 
     def apply_detection_function(self, band, detection_function):
+        """
+        Run a detection function on the detection array of a band.
+
+        The `data` attribute of the object returned by the function (the
+        integer label array of a segmentation image) is stored in the
+        tile under the name `"segmap_data"`.
+
+        Parameters
+        ----------
+        band : str
+            The band whose `"detection_array"` is used.
+        detection_function : callable
+            The function taking the 2D detection array and returning an
+            object with a `data` attribute, such as a photutils
+            `SegmentationImage`.
+
+        Raises
+        ------
+        ValueError
+            If no `"detection_array"` has been added to the tile.
+        """
 
         if 'detection_array' not in self.data_keywords:
             raise ValueError("Detection array not found in data keywords")
