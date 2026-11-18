@@ -52,6 +52,11 @@
     the two and should be run after updating photutils.
 - `pipelines.deblend` hands the largest sources to the pool first,
   one at a time, and restores the order of the catalogue.
+- Measured against 0.1.0 on the Hydra S mosaic (21112 x 14611
+  pixels, same machine, the driver's parameters, two deblending
+  passes): 2011 s -> 212 s, peak memory 10.3 GB -> 3.5 GB, output
+  1612 MB in 246489 files -> 154 MB in 297 files. The catalogues
+  have 26127 and 26133 detected sources.
 - Streaming deblending for HEALPix tilings (`_deblend_healpix`):
   every packed file of the detection is a task; a worker reads it,
   deblends and measures its sources and writes a packed file of
