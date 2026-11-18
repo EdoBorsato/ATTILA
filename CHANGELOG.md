@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0 (in development)
+
+- Nothing yet.
+
 ## 0.1.0 (2026-11-18)
 
 First tagged version of ATTILA, the code presented in
