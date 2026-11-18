@@ -789,7 +789,7 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
 
     return sources, ext, field, tiling, threshold, nconn
 
-def _deblend_source(source, nlevels, contrast=1/8.):
+def _deblend_source(source, nlevels, contrast=1/8., npixels=5):
     """
     Deblend one source and attach the result to it.
 
@@ -818,6 +818,7 @@ def _deblend_source(source, nlevels, contrast=1/8.):
             segmap=SegmentationImage(source.label*source.segment.astype(int)),
             nlevels=nlevels,
             contrast=contrast,
+            npixels=npixels,
         )
         return source
 
@@ -861,7 +862,7 @@ def _deblend_pack(record):
         parents = Sources(read_pack(record['path']), shared['header'])
 
         for source in parents:
-            _deblend_source(source, shared['nlevels'], shared['contrast'])
+            _deblend_source(source, shared['nlevels'], shared['contrast'], shared['npixels'])
 
         deblended = Sources.from_deblend(parents)
 
@@ -907,6 +908,8 @@ def _deblend_healpix(
         contrast: float = 1 / 8.,
         n_workers: int = 8,
         keep_sources: bool = False,
+        npixels: int = 5,
+        output: str = None,
     ):
     """
     Deblend a packed detection catalogue, one file at a time.
@@ -949,6 +952,11 @@ def _deblend_healpix(
         If `True` the deblended sources are read back and returned;
         if `False` the returned container only has the table and
         the path of the catalogue file.
+    npixels
+        The minimum number of connected pixels of a child.
+    output
+        The output folder. By default
+        `./output/deblend/<threshold>_<nconn>_<nlevels>`.
 
     Returns
     -------
@@ -963,7 +971,9 @@ def _deblend_healpix(
 
     header = fits.Header.fromfile(catalogue['header'])
 
-    output = f'./output/deblend/{threshold}_{nconn}_{nlevels}'
+    if output is None:
+        output = f'./output/deblend/{threshold}_{nconn}_{nlevels}'
+
     os.makedirs(path.join(output, 'cells'), exist_ok=True)
 
     # The files with the largest sources first: they take most of
@@ -978,6 +988,7 @@ def _deblend_healpix(
         order = tiling.order,
         nlevels = nlevels,
         contrast = contrast,
+        npixels = npixels,
         output = output,
         threshold = catalogue.get('threshold'),
         det_step = catalogue.get('det_step'),
