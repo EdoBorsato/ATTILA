@@ -9,6 +9,8 @@ segments it, measures the detected sources and deblends them. Selected
 sources can then be modelled in 2D with AstroPhot and analysed with
 isophotes, curves of growth and 1D Sersic fits.
 
+This repository is under active development.
+
 ## Processing flow
 
 1. **Field** (`attila.field`): load the images and noise maps of every
