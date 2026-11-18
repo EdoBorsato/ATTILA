@@ -111,16 +111,23 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   around them. They are blanked by `Field(max_abs_value=1e6)`; 11
   more pixels between 1e5 and 1e6 are kept. Blanking them changed 2
   of the 26133 sources.
-- Half-precision detection cutouts (`det_dtype=numpy.float16`) save
-  0.08 GB of the 3 GB peak on the Hydra S mosaic and do not change
-  the run time. They must be converted to single precision before
-  any computation (numpy is 17 to 40 times slower on half
-  precision, `scipy.ndimage` refuses it, and photutils deblends
-  differently); `pipelines.deblend` does the conversion. After it,
-  the number of children is unchanged and 1.8% of the sources have
-  a few pixels assigned to another child.
-- One file per source and array: the 78399 files of the Hydra S
-  detection hold 0.21 GB but take 0.49 GB on disk.
+- Output of the detection on the Hydra S mosaic (26133 sources):
+  494 MB on disk in 78399 files with three files per source; 103 MB
+  in 96 files packed with exact values; 40 MB packed with terraces
+  of 0.1%. Reloading takes 1.8 s, 0.4 s and 0.6 s. The run time of
+  the stage does not change (27 to 28 s): saving is not what limits
+  it.
+- Terraces of 0.1% keep the number of children of the deblending
+  for all the 5124 sources tested, and 1.9% of them have a few
+  pixels assigned to another child; with 1% steps 6 of 299 blended
+  sources change their number of children. Inside a footprint,
+  values at or below the threshold (closed holes) are stored as the
+  threshold. Half precision was tested and dropped: same size and
+  agreement, but numpy is 17 to 40 times slower on it and
+  `scipy.ndimage` refuses it.
+- The detection cutouts of the sources are zero outside the
+  footprint. The deblending stage still saves three files per
+  source.
 - The sources returned by `detect` (`keep_sources=True`) and the
   deblending stage still hold every source in memory.
 - Compared with version 0.1.0 on the central 6000 x 6000 pixels of

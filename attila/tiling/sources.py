@@ -34,6 +34,7 @@ from astropy import units as u
 
 from tqdm import tqdm
 
+import io
 import os
 from os import path
 
@@ -51,6 +52,251 @@ from astropy.io import fits
 from astropy.coordinates import SkyCoord
 
 import warnings
+
+def terrace_codes(values, threshold, step):
+    """
+    Return the terrace level of the values of a detection array.
+
+    The levels are `threshold * (1 + step)**k`, so that the contrast
+    between two consecutive levels is the same everywhere. Level 0
+    holds the values up to the threshold (and NaN); level `k >= 1`
+    holds the values between `threshold * (1 + step)**(k - 1)` and
+    `threshold * (1 + step)**k`.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        The values.
+    threshold : float
+        The detection threshold, which is the edge of the first
+        level: a value is above the threshold if and only if its
+        level is larger than zero.
+    step : float
+        The relative step between two levels, for example 0.001.
+
+    Returns
+    -------
+    numpy.ndarray
+        The levels, as unsigned 16-bit integers.
+    """
+    values = np.asarray(values, dtype=np.float64)
+
+    codes = np.zeros(values.shape, dtype=np.uint16)
+
+    above = values > threshold
+
+    levels = 1 + np.floor(np.log(values[above] / threshold) / np.log1p(step))
+
+    codes[above] = np.clip(levels, 1, np.iinfo(np.uint16).max).astype(np.uint16)
+
+    return codes
+
+
+def terrace_decode(codes, threshold, step):
+    """
+    Return the values of terrace levels.
+
+    Level 0 gives the threshold and level `k >= 1` the geometric
+    centre of its interval, `threshold * (1 + step)**(k - 0.5)`.
+    The function is the inverse of `terrace_codes` on the values it
+    returns, so terraced values survive any number of round trips.
+
+    Parameters
+    ----------
+    codes : numpy.ndarray
+        The levels.
+    threshold : float
+        The detection threshold.
+    step : float
+        The relative step between two levels.
+
+    Returns
+    -------
+    numpy.ndarray
+        The values, as 32-bit floats.
+    """
+    codes = np.asarray(codes, dtype=np.float64)
+
+    values = threshold * np.exp((codes - 0.5) * np.log1p(step))
+
+    return np.where(codes > 0, values, threshold).astype(np.float32)
+
+
+def terrace_values(values, threshold, step):
+    """
+    Replace the values of a detection array by their terrace levels.
+
+    See `terrace_codes` and `terrace_decode`.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        The values.
+    threshold : float
+        The detection threshold.
+    step : float
+        The relative step between two levels.
+
+    Returns
+    -------
+    numpy.ndarray
+        The terraced values, as 32-bit floats.
+    """
+    return terrace_decode(terrace_codes(values, threshold, step), threshold, step)
+
+
+# Columns of the table of integers stored in a packed file.
+_PACK_COLUMNS = ('label', 'previous_label', 'area', 'iymin', 'iymax', 'ixmin', 'ixmax', 'cell_id', 'peak_y', 'peak_x')
+
+
+def write_pack(filename, sources, threshold=None, step=None, level=9):
+    """
+    Save a group of sources, for example those of a cell, in one file.
+
+    The file holds, for all the sources together: a table of
+    integers (label, parent label, area, bounding box and, if the
+    sources have them, HEALPix cell and peak), the footprints as
+    packed bits, and the values of the detection array inside the
+    footprints. The pixels of a box outside the footprint are not
+    stored and are read back as zero.
+
+    If `threshold` and `step` are given the values are stored as
+    terrace levels (`terrace_codes`), which is exact for cutouts
+    that were terraced with the same parameters and much smaller;
+    otherwise they are stored as 32-bit floats.
+
+    The arrays are written in the `.npz` format and compressed with
+    zstd (`<filename>.npz.zst`). Without the `zstandard` package the
+    deflate compression of numpy is used instead (`<filename>.npz`).
+
+    Parameters
+    ----------
+    filename : str
+        The path of the file, without extension.
+    sources : iterable of Source
+        The sources. Their detection cutouts must be present.
+    threshold : float, optional
+        The detection threshold of the terraces.
+    step : float, optional
+        The relative step of the terraces.
+    level : int
+        The zstd compression level.
+
+    Returns
+    -------
+    str
+        The path of the file that was written.
+    """
+    sources = list(sources)
+
+    meta = np.array([[
+        source.label, source.previous_label, source.area,
+        source.bbox.iymin, source.bbox.iymax, source.bbox.ixmin, source.bbox.ixmax,
+        getattr(source, 'cell_id', -1),
+        *getattr(source, 'peak', (-1, -1))
+    ] for source in sources], dtype=np.int64).reshape(len(sources), len(_PACK_COLUMNS))
+
+    segments = [np.asarray(source.segment, dtype=bool) for source in sources]
+
+    inside = [np.asarray(source.det_arr)[segment] for source, segment in zip(sources, segments)]
+    inside = np.concatenate(inside) if inside else np.zeros(0, dtype=np.float32)
+
+    terraced = threshold is not None and step is not None
+
+    arrays = {
+        'meta': meta,
+        'mask': np.packbits(np.concatenate([segment.ravel() for segment in segments]) if segments else np.zeros(0, bool)),
+        'terrace': np.array([threshold, step] if terraced else [np.nan, np.nan], dtype=np.float64),
+        'det': terrace_codes(inside, threshold, step) if terraced else inside.astype(np.float32),
+    }
+
+    try:
+        import zstandard
+    except ImportError:
+        np.savez_compressed(filename + '.npz', **arrays)
+
+        return filename + '.npz'
+
+    buffer = io.BytesIO()
+    np.savez(buffer, **arrays)
+
+    with open(filename + '.npz.zst', 'wb') as handle:
+        handle.write(zstandard.ZstdCompressor(level=level).compress(buffer.getvalue()))
+
+    return filename + '.npz.zst'
+
+
+def read_pack(filename, keep_det_arr=True):
+    """
+    Read the sources saved by `write_pack`.
+
+    Parameters
+    ----------
+    filename : str
+        The path of the file, with its extension.
+    keep_det_arr : bool
+        If `False` the detection cutouts are not rebuilt and the
+        footprints are used in their place, as `Source.load_light`
+        does.
+
+    Returns
+    -------
+    list of Source
+        The sources, in the order they were saved, with the
+        attributes `cell_id` and `peak` if they were stored.
+    """
+    if filename.endswith('.zst'):
+        import zstandard
+
+        with open(filename, 'rb') as handle:
+            arrays = np.load(io.BytesIO(zstandard.ZstdDecompressor().decompress(handle.read())))
+    else:
+        arrays = np.load(filename)
+
+    meta, det = arrays['meta'], arrays['det']
+    threshold, step = arrays['terrace']
+
+    shapes = [(row[4] - row[3], row[6] - row[5]) for row in meta]
+    sizes = np.array([shape[0] * shape[1] for shape in shapes], dtype=np.int64)
+
+    mask = np.unpackbits(arrays['mask'], count=int(sizes.sum())).astype(bool)
+
+    if keep_det_arr and not np.isnan(step):
+        det = terrace_decode(det, threshold, step)
+
+    sources, pixel, value = [], 0, 0
+
+    for row, shape, size in zip(meta, shapes, sizes):
+        values = dict(zip(_PACK_COLUMNS, (int(item) for item in row)))
+
+        segment = mask[pixel:pixel + size].reshape(shape)
+        pixel += size
+
+        if keep_det_arr:
+            det_arr = np.zeros(shape, dtype=np.float32)
+            det_arr[segment] = det[value:value + values['area']]
+        else:
+            det_arr = segment.copy()
+
+        value += values['area']
+
+        source = Source(
+            segment = segment,
+            det_arr = det_arr,
+            label = values['label'],
+            area = values['area'],
+            bbox = BoundingBox(ixmin=values['ixmin'], ixmax=values['ixmax'], iymin=values['iymin'], iymax=values['iymax']),
+            previous_label = values['previous_label']
+        )
+
+        if values['cell_id'] >= 0:
+            source.cell_id = values['cell_id']
+            source.peak = (values['peak_y'], values['peak_x'])
+
+        sources.append(source)
+
+    return sources
+
 
 def Polygon_to_BoundingBox(polygon):
     """
@@ -363,9 +609,7 @@ class Source:
 
         if keep_det_arr:
             #np.save(path.join(filename, f"det_arr.npy"), self.det_arr.astype(np.float32))
-            # Half-precision cutouts are stored as they are.
-            dtype = np.float16 if self.det_arr.dtype == np.float16 else np.float32
-            np.save(filename + ".det_arr.npy", self.det_arr.astype(dtype))
+            np.save(filename + ".det_arr.npy", self.det_arr.astype(np.float32))
 
 
         metadata = {
@@ -1150,8 +1394,9 @@ class Sources:
         """
         Load a collection saved with `save_light`.
 
-        The sources are read from the `sources` sub-folder of
-        `filename`. If `ids` is None, every source of that folder is
+        The sources are read from the `cells` sub-folder of `filename`
+        if it exists (packed layout, see `write_pack`), sorted by
+        label; otherwise from the `sources` sub-folder. If `ids` is None, every source of that folder is
         loaded once, in sorted order of name. The header is read from
         `header.hdr` and, if `properties.csv` exists, it is loaded in
         the attribute `properties`.
@@ -1175,8 +1420,23 @@ class Sources:
 
         sources_list = []
         path_to_sources = path.join(filename, "sources")
+        path_to_cells = path.join(filename, "cells")
 
-        if ids is None:
+        if path.isdir(path_to_cells):
+            # Packed layout: one file per cell.
+            for name in tqdm(sorted(os.listdir(path_to_cells))):
+                sources_list += read_pack(path.join(path_to_cells, name), keep_det_arr=keep_det_arr)
+
+            if ids is not None:
+                wanted = {str(id) for id in ids}
+                sources_list = [source for source in sources_list
+                                if f"{source.previous_label}_{source.label}" in wanted]
+
+            sources_list.sort(key=lambda source: (source.previous_label, source.label))
+
+            names = []
+
+        elif ids is None:
             filenames=os.listdir(path_to_sources)
 
             # Each source owns up to three files sharing one prefix.

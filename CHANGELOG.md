@@ -27,8 +27,14 @@
 - `Field(max_abs_value=1e6)`: data pixels with a larger absolute
   value are set to NaN in memory when the field is loaded (the files
   are not modified); the counts are in `Field.masked_pixels`.
-- `detect_in_cells(det_dtype=numpy.float16)` stores the detection
-  cutouts of the sources in half precision. Off by default.
+- Packed catalogues: the HEALPix detection saves one zstd file per
+  cell (`write_pack`, `read_pack`, folder `cells/`) instead of three
+  files per source; `Sources.load_light` reads both layouts. Only
+  the pixels inside the footprints are stored.
+- Terraced detection cutouts (`detect_in_cells(det_step=...)`,
+  `terrace_values`): the values stored in the sources are levels
+  with a constant relative step (0.1% by default in the pipeline),
+  saved exactly as level indices.
 - Added `gaussian_smooth`, a separable Gaussian smoothing that
   ignores invalid pixels.
 

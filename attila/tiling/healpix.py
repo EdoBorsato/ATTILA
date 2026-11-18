@@ -48,7 +48,7 @@ from photutils.aperture import BoundingBox
 from scipy import ndimage
 from tqdm import tqdm
 
-from attila.tiling.sources import Source, Sources
+from attila.tiling.sources import Source, Sources, terrace_values
 from attila.tiling.tiles import BaseTile
 
 
@@ -675,33 +675,41 @@ def _segment_cutout(det_arr, box, detection_function):
     return cutout, np.asarray(getattr(segmap, 'data', segmap))
 
 
-def _stored(det, dtype):
+def _stored(det, segment, terrace):
     """
-    Copy a cutout of the detection array in the type it is stored in.
+    Copy the cutout of the detection array that a source stores.
+
+    The pixels outside the segment are set to zero: they belong to
+    the background or to other sources and are not used. If
+    `terrace` is given, the values inside the segment are replaced
+    by their terrace levels (`attila.tiling.sources.terrace`), which
+    a packed file reproduces exactly.
 
     Parameters
     ----------
     det : numpy.ndarray
-        The cutout.
-    dtype : numpy.dtype
-        `numpy.float32` or `numpy.float16`. Half precision keeps
-        about three significant digits; the values are clipped to
-        its range (6.5e4) before the conversion.
+        The cutout of the detection array on the box of the source.
+    segment : numpy.ndarray
+        The boolean footprint of the source in the box.
+    terrace : tuple of float or None
+        The threshold and the relative step of the terraces.
 
     Returns
     -------
     numpy.ndarray
-        The copy.
+        The cutout, as 32-bit floats.
     """
-    if np.dtype(dtype) == np.float16:
-        limit = float(np.finfo(np.float16).max)
+    stored = np.zeros(det.shape, dtype=np.float32)
 
-        return np.clip(det, -limit, limit).astype(np.float16)
+    if terrace is None:
+        stored[segment] = det[segment]
+    else:
+        stored[segment] = terrace_values(det[segment], *terrace)
 
-    return np.array(det, dtype=dtype)
+    return stored
 
 
-def _candidate(cutout, labels, label, obj_slices, box, det_dtype=np.float32):
+def _candidate(cutout, labels, label, obj_slices, box, det_terrace=None):
     """
     Describe one segment of a cutout in full-image coordinates.
 
@@ -740,7 +748,7 @@ def _candidate(cutout, labels, label, obj_slices, box, det_dtype=np.float32):
 
     return {
         'segment': segment,
-        'det_arr': _stored(det, det_dtype),
+        'det_arr': _stored(det, segment, det_terrace),
         'bbox': (y0 + sl_y.start, y0 + sl_y.stop, x0 + sl_x.start, x0 + sl_x.stop),
         'area': int(np.count_nonzero(segment)),
         'peak': (int(y0 + sl_y.start + peak_y), int(x0 + sl_x.start + peak_x)),
@@ -942,7 +950,7 @@ def _to_sources(candidates, header):
 
 
 def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=None, header=None, measure=None,
-                 det_dtype=np.float32):
+                 det_terrace=None):
     """
     Detect, and optionally measure, the sources of one cell.
 
@@ -1016,7 +1024,7 @@ def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=Non
             seeds.append(((int(oy0 + sl_y.start + seed_y), int(ox0 + sl_x.start + seed_x)), outer))
 
         else:
-            candidates.append(_candidate(cutout, labels, label, obj_slices, outer, det_dtype))
+            candidates.append(_candidate(cutout, labels, label, obj_slices, outer, det_terrace))
 
     owned = []
 
@@ -1040,7 +1048,7 @@ def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=Non
     return sources, measured, seeds, coarse
 
 
-def _resolve_open(det_arr, seeds, box, detection_function, det_dtype=np.float32):
+def _resolve_open(det_arr, seeds, box, detection_function, det_terrace=None):
     """
     Detect again the sources that were cut by the border of a cutout.
 
@@ -1081,7 +1089,7 @@ def _resolve_open(det_arr, seeds, box, detection_function, det_dtype=np.float32)
         whole_image = box == (0, shape[0], 0, shape[1])
 
         if whole_image or not any(_touches_border(objects[label - 1], box, shape) for label in wanted):
-            return [_candidate(cutout, labels, label, objects[label - 1], box, det_dtype) for label in wanted]
+            return [_candidate(cutout, labels, label, objects[label - 1], box, det_terrace) for label in wanted]
 
         y0, y1, x0, x1 = box
         half_y, half_x = (y1 - y0 + 1) // 2, (x1 - x0 + 1) // 2
@@ -1102,7 +1110,7 @@ def _detect_cell_shared(index):
 def _resolve_open_shared(task):
     """Run `_resolve_open` on the shared arguments, in a worker process."""
     return _resolve_open(_SHARED_DETECTION['det_arr'], task[0], task[1], _SHARED_DETECTION['detection_function'],
-                         _SHARED_DETECTION['det_dtype'])
+                         _SHARED_DETECTION['det_terrace'])
 
 
 def _iter_tasks(function, shared_function, tasks, n_workers, backend, progress):
@@ -1192,7 +1200,7 @@ def detect_in_cells(
         threshold: Optional[float] = None,
         backend: str = 'threads',
         measure: Optional[Callable] = None,
-        det_dtype = np.float32,
+        det_step: Optional[float] = None,
         sink: Optional[Callable] = None,
     ) -> Sources:
     """
@@ -1275,10 +1283,14 @@ def detect_in_cells(
         labels, and the result of `measure`. If given, the sources
         are not kept and an empty container is returned.
 
-    det_dtype
-        The type of the cutouts of the detection array stored in the
-        sources: `numpy.float32`, or `numpy.float16` to halve their
-        size. The detection itself always uses `det_arr` as it is.
+    det_step
+        If given, the cutouts of the detection array stored in the
+        sources are terraced: the values are replaced by levels
+        that differ by this relative step, starting at `threshold`
+        (`attila.tiling.sources.terrace_values`). Terraced cutouts
+        compress well and are saved exactly by `write_pack`. It
+        needs `threshold`. The detection itself always uses
+        `det_arr` as it is.
 
     Returns
     -------
@@ -1300,14 +1312,19 @@ def detect_in_cells(
     if header is None:
         header = tiling.header_dict[band]
 
+    if det_step is not None and threshold is None:
+        raise ValueError("det_step needs the threshold of the detection")
+
+    det_terrace = None if det_step is None else (float(threshold), float(det_step))
+
     shared = dict(det_arr=det_arr, tiling=tiling, band=band, detection_function=detection_function,
-                  threshold=threshold, header=header, measure=measure, det_dtype=det_dtype)
+                  threshold=threshold, header=header, measure=measure, det_terrace=det_terrace)
 
     def run(index):
         return _detect_cell(index=index, **shared)
 
     def resolve(task):
-        return _resolve_open(det_arr, task[0], task[1], detection_function, det_dtype)
+        return _resolve_open(det_arr, task[0], task[1], detection_function, det_terrace)
 
     kept = []
     peaks_found = set()

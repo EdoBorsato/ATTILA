@@ -41,7 +41,7 @@ from attila.tiling.healpix import HealpixTiling, LazyDetectionArray, detect_in_c
 from attila.utils.image_utils import gaussian_smooth
 from attila.tiling.tiles import ConvolutionTile, BaseTile, DetectionTile
 from attila.detection.detection import segment
-from attila.tiling.sources import Sources, _same_grid
+from attila.tiling.sources import Sources, _same_grid, write_pack
 from attila.properties.extinction import Extinction
 from attila.properties.properties import Properties
 
@@ -249,7 +249,8 @@ def _detect_healpix(
         n_workers: int = 4,
         backend: str = 'processes',
         keep_sources: bool = True,
-        det_dtype = np.float32,
+        det_step: float = 1e-3,
+        packed: bool = True,
     ):
     """
     Detect, measure and save the sources of a HEALPix tiling.
@@ -300,9 +301,16 @@ def _detect_healpix(
         nothing is kept and the returned container only has the
         table: the sources are read back from the output folder
         with `Sources.load_light`.
-    det_dtype
-        The type of the cutouts of the detection array stored in the
-        sources, `numpy.float32` or `numpy.float16`.
+    det_step
+        The relative step of the terraces of the detection cutouts
+        stored in the sources (`detect_in_cells`); None keeps the
+        exact values. With the default of 0.1% the deblending finds
+        the same number of children and the files are about four
+        times smaller.
+    packed
+        If `True` the sources are saved in one compressed file per
+        cell, in the `cells` sub-folder (`write_pack`); if `False`
+        in three files per source, in the `sources` sub-folder.
 
     Returns
     -------
@@ -365,17 +373,32 @@ def _detect_healpix(
         return table
 
     output = f'./output/detection/{threshold}_{nconn}'
-    os.makedirs(path.join(output, 'sources'), exist_ok=True)
+    os.makedirs(path.join(output, 'cells' if packed else 'sources'), exist_ok=True)
 
     tables, kept = [], []
+
+    # Number of files written for each cell: the sources that were
+    # cut by a cutout arrive after those of their cell.
+    n_files = {}
 
     def sink(sources, table):
         """Save the sources of one cell; runs in this process."""
         table['label'] = [source.label for source in sources]
         tables.append(table)
 
-        for source in sources:
-            source.save_light(path.join(output, 'sources', f'source_{source.previous_label}_{source.label}'))
+        if packed:
+            cell_id = sources.sources[0].cell_id
+            part = n_files[cell_id] = n_files.get(cell_id, 0) + 1
+
+            write_pack(
+                path.join(output, 'cells', f'cell_{cell_id}_{part}'),
+                sources,
+                threshold = None if det_step is None else threshold,
+                step = det_step
+            )
+        else:
+            for source in sources:
+                source.save_light(path.join(output, 'sources', f'source_{source.previous_label}_{source.label}'))
 
         if keep_sources:
             kept.extend(sources.sources)
@@ -394,7 +417,7 @@ def _detect_healpix(
             backend = backend,
             measure = measure,
             sink = sink,
-            det_dtype = det_dtype
+            det_step = det_step
         )
 
     sources = Sources(kept, header)
