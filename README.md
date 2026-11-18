@@ -68,27 +68,58 @@ Not tracked: `dustmaps/` (SFD maps, 129 MB), `attila.zip` (old
 snapshot), `mtobjects/` (MTObjects comparison, not published yet),
 `archive/` (local copies of retired code) and `profiling/results/`.
 
-## Requirements
+## Installation
 
-Python 3.12 with `numpy`, `scipy`, `astropy`, `photutils`, `shapely`,
-`pandas`, `matplotlib`, `tqdm`, `dustmaps`, `dust_extinction` and
-`synphot` for the detection pipeline.
-
-The fitting and interactive modules also need `astrophot`, `emcee`,
-`corner`, `ipywidgets`, `rasterio` and `rpack`; `compress` /
-`decompress` in `attila/tiling/sources.py` need `zstandard`.
-
-Install the package in editable mode from a clone of the repository,
-so that the filter curves in `synphot_filters/` are found:
+ATTILA needs Python 3.10 or later; it is developed with Python 3.12.
+Install it in editable mode from a clone of the repository, so that
+the filter curves in `synphot_filters/` are found:
 
 ```bash
-pip install -e .                        # detection pipeline
-pip install -e ".[fitting,compression]" # everything
+git clone https://github.com/EdoBorsato/ATTILA.git
+cd ATTILA
+
+# Optional: a dedicated environment.
+conda create -n attila python=3.12
+conda activate attila
+
+pip install -e .                         # detection pipeline
+pip install -e ".[fitting,compression]"  # everything
 ```
 
-The SFD dust maps are not in the repository: download them with
-`dustmaps` into a `dustmaps/` folder at the repository root, or pass
+The plain install covers detection, deblending and the measurements.
+The `fitting` extra adds the AstroPhot models, the isophotes, the 1D
+fits and the interactive tools; `compression` adds the zstd
+compression of the source catalogues.
+
+The SFD dust maps (about 130 MB) are not in the repository. Download
+them once into a `dustmaps/` folder at the repository root:
+
+```bash
+python -c "from dustmaps.config import config; \
+config['data_dir'] = 'dustmaps'; \
+import dustmaps.sfd; dustmaps.sfd.fetch()"
+```
+
+This also makes `dustmaps/` the default data folder of the `dustmaps`
+package. Maps stored elsewhere can be used by passing
 `extinction_maps_folder` to `Extinction`.
+
+Check the installation with:
+
+```bash
+python -c "import attila; print(attila.__version__)"
+```
+
+## Requirements
+
+The detection pipeline uses `numpy`, `scipy`, `astropy`, `photutils`,
+`shapely`, `pandas`, `matplotlib`, `tqdm`, `dustmaps`,
+`dust_extinction` and `synphot`.
+
+The fitting and interactive modules also use `astrophot`, `emcee`,
+`corner`, `ipywidgets`, `rasterio` and `rpack`; `compress` /
+`decompress` in `attila/tiling/sources.py` use `zstandard`. All of
+them are installed by the commands above.
 
 ## Running the detection pipeline
 
