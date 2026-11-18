@@ -88,9 +88,26 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   that took about half of the time were removed in 0.2.0.
 - `combine`: the FFT convolution per tile and reading the images from
   the SSD dominate.
-- Deblending: a handful of very large segments take almost all the
-  time (3 of 150 sampled sources took 72 of 75 s), so the pool is
-  limited by its slowest items.
+- Deblending: ten very large sources took 86% of the time (one of
+  6.5 Mpx took 40%), because photutils floods the whole source
+  again for every rejected peak. `LocalWatershedDeblender` (0.2.0)
+  floods only the box of the rejected peak: 209 s -> 19 s on the
+  Hydra S mosaic with 10 processes, 36 s with one.
+- `LocalWatershedDeblender` depends on private names of photutils
+  (`_SingleSourceDeblender`, `_DeblendParams`, `_get_labels`,
+  `_make_binary_structure`; photutils 2.3.0). It differs from
+  photutils where pixels have exactly equal values: the watershed
+  of scikit-image breaks such ties in an order that depends on its
+  internal state. With terraced cutouts 2 of the 26133 Hydra S
+  sources differ (one examined: 16 of 580 pixels move to the other
+  child, both children pass the contrast either way).
+- photutils switches a source from exponential to linear levels,
+  with a warning that the pipeline silences, when the source has a
+  non-positive minimum or more than 200 candidate peaks. The fast
+  deblender does the same. Which sources are affected was not
+  checked.
+- The deblending pool hands the sources out in catalogue order and
+  holds all of them in memory.
 
 ## 5. Open: HEALPix tiling (0.2.0, in development)
 

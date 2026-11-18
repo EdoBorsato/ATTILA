@@ -51,7 +51,8 @@ This repository is under active development.
 | `attila/tiling/sources.py` | 1377 | `Source`, `Sources`, flat file layout, zstd compression. |
 | `attila/tiling/sources_dev.py` | 12 | Deprecated alias of `sources.py`, kept for old scripts. |
 | `attila/detection/detection.py` | 163 | `segment`. |
-| `attila/deblending/deblending.py` | 85 | `deblend`. |
+| `attila/deblending/deblending.py` | 280 | `deblend`, `LocalWatershedDeblender` (photutils deblender with a local watershed). |
+| `tests/` | | Checks against photutils (`pytest tests`). |
 | `attila/properties/extinction.py` | 325 | `Extinction`. |
 | `attila/properties/properties.py` | 781 | `Properties`. |
 | `attila/utils/image_utils.py` | 205 | Unit conversions and small array helpers. |

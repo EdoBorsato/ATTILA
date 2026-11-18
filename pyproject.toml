@@ -17,6 +17,7 @@ dependencies = [
     "astropy",
     "astropy-healpix",
     "photutils",
+    "scikit-image",
     "shapely",
     "pandas",
     "matplotlib",

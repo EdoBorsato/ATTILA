@@ -27,6 +27,29 @@
 - `Field(max_abs_value=1e6)`: data pixels with a larger absolute
   value are set to NaN in memory when the field is loaded (the files
   are not modified); the counts are in `Field.masked_pixels`.
+- Faster deblending of large sources, without modifying photutils.
+  `attila.deblending.deblending.LocalWatershedDeblender` is a
+  subclass, defined in ATTILA, of the photutils class that deblends
+  one source; it replaces one method, `apply_watershed`.
+  - What photutils does: the source is divided among the candidate
+    peaks by a watershed; if a child holds less than `contrast` of
+    the flux, the faintest child is removed and the watershed is run
+    again on the whole source, until every child passes. Large
+    sources have many faint candidates, so the whole source is
+    flooded 40 to 100 times.
+  - What ATTILA does: when a child is removed, the pixels of the
+    other children cannot change, so the watershed is run only on
+    the box of the removed child. Thresholds, markers and selection
+    criteria are those of photutils.
+  - Effect on the Hydra S mosaic (26133 sources, 10 processes):
+    209 s -> 19 s; the largest source, 191 s -> 17 s. 26131 label
+    maps are identical to photutils; the differences are pixels
+    with exactly equal values, see `KNOWN_ISSUES.md`.
+  - `deblend(..., fast=False)` calls
+    `photutils.segmentation.deblend_sources` as before; this is
+    also what happens, with a warning, if a future photutils no
+    longer provides the class. `tests/test_deblending.py` compares
+    the two and should be run after updating photutils.
 - Packed catalogues: the HEALPix detection saves one zstd file per
   cell (`write_pack`, `read_pack`, folder `cells/`) instead of three
   files per source; `Sources.load_light` reads both layouts. Only
