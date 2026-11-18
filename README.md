@@ -134,6 +134,14 @@ python -m pstats profiling/results/<run>/detect.prof
 Comments follow PEP 8 and docstrings follow PEP 257 with numpydoc
 sections, wrapped at 72 characters.
 
+## Citing ATTILA
+
+If you use ATTILA, please cite the presentation paper:
+Borsato et al. 2026, A&A, 714, A223,
+[doi:10.1051/0004-6361/202660975](https://doi.org/10.1051/0004-6361/202660975)
+([arXiv:2605.21598](https://arxiv.org/abs/2605.21598)). The full
+reference is in `CITATION.cff`.
+
 ## Licence
 
 BSD 3-Clause, see `LICENSE`.

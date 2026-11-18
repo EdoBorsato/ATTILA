@@ -1,0 +1,61 @@
+cff-version: 1.2.0
+message: "If you use ATTILA, please cite the presentation paper."
+title: "ATTILA: multi-tAsking deTecTIon tool for Lsb gAlaxies"
+type: software
+version: "0.1.0"
+date-released: "2026-11-18"
+license: BSD-3-Clause
+repository-code: "https://github.com/EdoBorsato/ATTILA"
+authors:
+  - family-names: "Borsato"
+    given-names: "E."
+preferred-citation:
+  type: article
+  title: "Advancing the detection of low surface brightness galaxies. I. ATTILA: multi-tAsking deTecTIon tool for Lsb gAlaxies"
+  authors:
+    - family-names: "Borsato"
+      given-names: "E."
+    - family-names: "Fonzo"
+      given-names: "F."
+    - family-names: "Bellucco"
+      given-names: "N."
+    - family-names: "Iodice"
+      given-names: "E."
+    - family-names: "Corsini"
+      given-names: "E. M."
+    - family-names: "Spavone"
+      given-names: "M."
+    - family-names: "Pasquato"
+      given-names: "S."
+    - family-names: "Buttitta"
+      given-names: "C."
+    - family-names: "Cantiello"
+      given-names: "M."
+    - family-names: "D'Onofrio"
+      given-names: "M."
+    - family-names: "Gullieuszik"
+      given-names: "M."
+    - family-names: "La Marca"
+      given-names: "A."
+    - family-names: "Moretti"
+      given-names: "A."
+    - family-names: "Nucita"
+      given-names: "A."
+    - family-names: "Paolillo"
+      given-names: "M."
+    - family-names: "Pizzella"
+      given-names: "A."
+    - family-names: "Portaluri"
+      given-names: "E."
+    - family-names: "Tortora"
+      given-names: "C."
+  journal: "Astronomy & Astrophysics"
+  volume: 714
+  start: "A223"
+  year: 2026
+  month: 10
+  doi: "10.1051/0004-6361/202660975"
+  identifiers:
+    - type: other
+      value: "arXiv:2605.21598"
+      description: "arXiv preprint"
