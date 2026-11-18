@@ -16,7 +16,6 @@ measured on the partial residuals of the AstroPhot 2D deblending.
 """
 import numpy as np
 
-from astropy.convolution import convolve
 import emcee
 import corner
 
@@ -284,9 +283,13 @@ class LogProbability_SersicSkyIS:
         Boolean array, `True` for the points excluded from the fit.
     prior : PriorSetter
         The prior of the model parameters.
-    kernel : None
-        The 1D convolution kernel. It is always set to `None`, so the
-        model is never convolved.
+    kernel : numpy.ndarray or None
+        The normalised 1D PSF kernel, or `None` for no convolution.
+    kernel_step : float
+        The spacing of the kernel samples, in the units of `radius`.
+    convolve_model : bool
+        The switch of the convolution: the Sersic model is convolved
+        with `kernel` only if this is `True` and a kernel is set.
     model_data_list : list of numpy.ndarray
         The model profile of every likelihood evaluation, appended in
         call order.
@@ -298,9 +301,9 @@ class LogProbability_SersicSkyIS:
         the unmasked points.
     """
 
-    def __init__(self, radius, data, data_err, mask, prior:PriorSetter, kernel=None):
+    def __init__(self, radius, data, data_err, mask, prior:PriorSetter, kernel=None, kernel_step=1.0, convolve_model=True):
         """
-        Store the profile to fit and the prior.
+        Store the profile to fit, the prior and the PSF kernel.
 
         Parameters
         ----------
@@ -312,37 +315,106 @@ class LogProbability_SersicSkyIS:
         data_err : numpy.ndarray
             The 1 sigma uncertainties on the intensities, shape
             `(n_points,)`, in the units of `data`.
-        mask : numpy.ndarray
+        mask : numpy.ndarray or None
             Boolean array of shape `(n_points,)`, `True` for the
-            points excluded from the fit.
+            points excluded from the fit. `None` keeps all the points.
         prior
             The prior on `(I0, Re, n, sky, log_f)`.
-        kernel : numpy.ndarray, optional
-            A 1D convolution kernel. The argument is accepted but not
-            stored: the `kernel` attribute is set to `None`.
+        kernel : numpy.ndarray or astropy.convolution.Kernel1D, optional
+            The 1D PSF: a cut through the centre of the PSF, with an
+            odd number of samples and the peak in the middle. It is
+            normalised to a unit sum. `None` means no convolution.
+        kernel_step : float
+            The spacing of the kernel samples, in the units of
+            `radius` (1 for a PSF sampled at the image pixel scale and
+            radii in pixels).
+        convolve_model : bool
+            If `False` the kernel is stored but the model is not
+            convolved.
+
+        Raises
+        ------
+        ValueError
+            If the kernel has an even number of samples.
         """
 
-        self.radius = radius
-        self.data = data
-        self.data_err = data_err
-        self.mask = mask
+        self.radius = np.asarray(radius, dtype=float)
+        self.data = np.asarray(data, dtype=float)
+        self.data_err = np.asarray(data_err, dtype=float)
+
+        if mask is None:
+            self.mask = np.zeros(self.radius.shape, dtype=bool)
+        else:
+            self.mask = np.asarray(mask, dtype=bool)
+
         self.prior = prior
 
-        # self.radius_from_center = np.insert(radius, 0, 0.0)
+        self.kernel_step = kernel_step
+        self.convolve_model = convolve_model
 
-        self.kernel = None
+        if kernel is None:
+            self.kernel = None
+
+        else:
+            # An astropy kernel stores its values in `array`.
+            kernel = np.asarray(getattr(kernel, "array", kernel), dtype=float)
+
+            if kernel.ndim != 1 or kernel.size % 2 == 0:
+                raise ValueError("The kernel must be 1D with an odd number of samples.")
+
+            self.kernel = kernel / kernel.sum()
+
+            # Uniform grid on which the model is convolved: symmetric
+            # around the centre and wider than the profile by the
+            # half-width of the kernel, so that the edges of the
+            # convolution fall outside the fitted radii.
+            half_width = kernel.size // 2
+            n_side = int(np.ceil(np.nanmax(self.radius) / kernel_step)) + half_width + 1
+
+            self._conv_grid = kernel_step * np.arange(-n_side, n_side + 1)
 
         self.model_data_list = []
+
+    def _convolved_model(self, profile, radius):
+        """
+        Evaluate a profile convolved with the PSF kernel.
+
+        The profile is evaluated on a uniform grid along a line
+        through the centre, mirrored at negative radii so that the
+        centre is smoothed from both sides, convolved with the kernel
+        and interpolated linearly at the requested radii. This is the
+        convolution of a cut through the centre of the galaxy with a
+        cut through the centre of the PSF: an approximation of the
+        2D convolution, which is not computed.
+
+        Parameters
+        ----------
+        profile : Sersic
+            The profile, with a method `model_from_radius`.
+        radius : numpy.ndarray
+            The radii at which the convolved profile is returned.
+
+        Returns
+        -------
+        numpy.ndarray
+            The convolved profile at `radius`.
+        """
+
+        model_on_grid = profile.model_from_radius(np.abs(self._conv_grid))
+
+        convolved = np.convolve(model_on_grid, self.kernel, mode="same")
+
+        return np.interp(radius, self._conv_grid, convolved)
 
     def log_likelihood(self, theta):
         """
         Return the Gaussian log-likelihood of a parameter vector.
 
         The model `m` is the Sersic profile plus the sky level,
-        evaluated on the unmasked radii (if a kernel were set, the
-        model would be evaluated on all the radii, convolved with
-        `astropy.convolution.convolve` and then masked). The variance
-        of each point is
+        evaluated on the unmasked radii. If a kernel is set and
+        `convolve_model` is `True`, the Sersic profile is first
+        convolved with the PSF (`_convolved_model`); the sky is
+        constant and is not affected. The variance of each point is
 
             s^2 = data_err^2 + m^2 * exp(2 * log_f)
 
@@ -378,15 +450,15 @@ class LogProbability_SersicSkyIS:
             log_f = theta[4]
         )
 
-        if self.kernel is not None:
-            model_data_from_center = sersic_instance.model_from_radius(self.radius) + sky_instance.model_from_radius(self.radius)
+        radius = self.radius[~self.mask]
 
-            model_data_from_center = convolve(model_data_from_center, self.kernel)
-
-            self.model_data = model_data_from_center[~self.mask]
+        if self.kernel is not None and self.convolve_model:
+            sersic_data = self._convolved_model(sersic_instance, radius)
 
         else:
-            self.model_data = sersic_instance.model_from_radius(self.radius[~self.mask]) + sky_instance.model_from_radius(self.radius[~self.mask])
+            sersic_data = sersic_instance.model_from_radius(radius)
+
+        self.model_data = sersic_data + sky_instance.model_from_radius(radius)
 
         self.model_data_list.append(self.model_data)
 
@@ -466,10 +538,12 @@ class FitProfile(LogProbability_SersicSkyIS):
                  radius,
                  data,
                  data_err,
-                 mask,
+                 mask=None,
                  prior=None,
                  starting_vector=None,
-                 kernel=None):
+                 kernel=None,
+                 kernel_step=1.0,
+                 convolve_model=True):
         """
         Store the profile, the prior and the starting point.
 
@@ -482,18 +556,25 @@ class FitProfile(LogProbability_SersicSkyIS):
         data_err : numpy.ndarray
             The 1 sigma uncertainties on the intensities, shape
             `(n_points,)`.
-        mask : numpy.ndarray
+        mask : numpy.ndarray, optional
             Boolean array of shape `(n_points,)`, `True` for the
-            points excluded from the fit.
+            points excluded from the fit. `None` keeps all the points.
         prior : PriorSetter, optional
             The prior on `(I0, Re, n, sky, log_f)`. `None` requests a
             `PriorSetter` built from `default_prior_dict_list`.
         starting_vector : numpy.ndarray, optional
             The parameter vector around which the walkers are
             initialised. `None` means `default_starting_vector`.
-        kernel : numpy.ndarray, optional
-            A 1D convolution kernel, passed to the parent class, which
-            does not store it.
+        kernel : numpy.ndarray or astropy.convolution.Kernel1D, optional
+            The 1D PSF kernel with which the Sersic model is convolved
+            (see `LogProbability_SersicSkyIS`). `None` means no
+            convolution.
+        kernel_step : float
+            The spacing of the kernel samples, in the units of
+            `radius`.
+        convolve_model : bool
+            The switch of the PSF convolution. Set it to `False` to
+            fit the unconvolved model while keeping the kernel.
         """
 
         if prior is None:
@@ -506,7 +587,7 @@ class FitProfile(LogProbability_SersicSkyIS):
         else:
             self.starting_vector = starting_vector
 
-        super().__init__(radius, data, data_err, mask, self.prior, kernel)
+        super().__init__(radius, data, data_err, mask, self.prior, kernel, kernel_step, convolve_model)
 
 
     def run(self, nsteps=1000, progress=True):

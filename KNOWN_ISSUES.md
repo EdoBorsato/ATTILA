@@ -7,18 +7,13 @@ with a small test; everything else comes from static reading.
 
 ## 1. Open: results
 
-- **The driver scripts do not use the 3 arcmin extinction tiling.**
-  `attila.pipelines.detect` now does, but the scripts that live next
-  to the data build `extinction_tiling` and then evaluate the
-  extinction on the detection tiles (17 arcmin in the Hydra run).
-  They also pass `../synphot_filters/` and `../dustmaps/` explicitly;
-  the arguments can be dropped, the defaults point to the repository.
-- **The 1D PSF convolution is never applied** (`FitProfile`).
-  `LogProbability_SersicSkyIS` sets `self.kernel = None` whatever is
-  passed, so the fits made with `kernel=CustomKernel(...)` are not
-  convolved. Left as it is: enabling it changes every fit, and the
-  convolution of a one-sided profile needs a decision on the centre
-  (the profile should be mirrored before convolving).
+- **The 1D PSF convolution is a cut, not a 2D convolution**
+  (`FitProfile`). The Sersic model is mirrored around the centre and
+  convolved with a cut through the PSF. It recovers the input
+  parameters of a profile blurred the same way (checked), but for
+  sources not much larger than the PSF a 2D convolution would differ.
+  Fits made before this version were not convolved at all: the
+  kernel was ignored.
 - **Negative S/N is clipped** (`combine`). The mosaic starts at zero
   and tiles are merged with `np.maximum`, so the detection array has
   no negative values. Probably harmless for detection; it matters for
@@ -113,7 +108,7 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   `--pixel-origin` and does not check for blank pixels.
 - `run_mto_*.py`: `os.chdir(ROOT)` at import, so relative arguments
   resolve from `mtobjects/`.
-- `detection_pipeline_full.py`: `contrast` only names the output
+- `detection_pipeline.py`: `contrast` only names the output
   folder; the applied value is hard-coded in each `debfunc`.
   `npixels=24/2` passes a float.
 
@@ -134,6 +129,12 @@ Results:
 - `_check_nan_in_data` keeps the tiles covered by more than 90% in
   every band (it kept the ones badly covered in every band).
 - `compute_pixel_scale` returns the mean of the two axes.
+- `FitProfile` applies the PSF kernel it is given; `convolve_model=
+  False` switches the convolution off, `kernel_step` sets the kernel
+  sampling, and `mask` is optional.
+- The driver scripts next to the data evaluate the extinction on the
+  3 arcmin `extinction_tiling`, as `attila.pipelines.detect` does
+  (they used the detection tiles).
 
 Crashes:
 
