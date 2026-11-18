@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Logs written by attila_logger in the working directory
+example.log
+AstroPhot.log
+
+# Profiling output
+profiling/results/
+
+# Large external data (SFD dust maps: fetch with dustmaps.sfd.fetch())
+dustmaps/
+
+# Old snapshot of the package
+attila.zip
+
+# MTObjects comparison work: kept local for now
+mtobjects/
+mtobjects_summary.txt
+
+# Local archive of retired code
+archive/
