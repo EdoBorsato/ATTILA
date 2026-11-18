@@ -363,7 +363,9 @@ class Source:
 
         if keep_det_arr:
             #np.save(path.join(filename, f"det_arr.npy"), self.det_arr.astype(np.float32))
-            np.save(filename + ".det_arr.npy", self.det_arr.astype(np.float32))
+            # Half-precision cutouts are stored as they are.
+            dtype = np.float16 if self.det_arr.dtype == np.float16 else np.float32
+            np.save(filename + ".det_arr.npy", self.det_arr.astype(dtype))
 
 
         metadata = {

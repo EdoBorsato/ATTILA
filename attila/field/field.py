@@ -24,6 +24,49 @@ from astropy.cosmology import units as cu
 from astropy.visualization import make_lupton_rgb
 
 
+def _mask_unphysical(data, max_abs_value, rows=512):
+    """
+    Blank the pixels of an image with non-physical values, in place.
+
+    The finite pixels whose absolute value exceeds `max_abs_value`
+    are set to NaN. The image is scanned in strips of rows, so a
+    memory-mapped image is not loaded as a whole; astropy maps FITS
+    files copy-on-write, so the file is not modified and only the
+    memory pages that hold a blanked pixel are copied.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        The image, modified in place. An image that cannot be
+        written to is left unchanged.
+    max_abs_value : float
+        The largest absolute value that is accepted.
+    rows : int
+        The number of rows of a strip.
+
+    Returns
+    -------
+    int
+        The number of pixels that were blanked.
+    """
+    if not data.flags.writeable:
+        return 0
+
+    count = 0
+
+    for start in range(0, data.shape[0], rows):
+        strip = data[start:start + rows]
+
+        # The comparison is False for NaN, which is left alone.
+        bad = np.abs(strip) > max_abs_value
+
+        if bad.any():
+            strip[bad] = np.nan
+            count += int(bad.sum())
+
+    return count
+
+
 class Field:
     """
     An observed field: the images and noise maps of all its bands.
@@ -56,7 +99,8 @@ class Field:
             obs_path_dict: Dict[str, str],
             extension=".fits",
             noise_type="rms",
-            axis=0  # Index (int) of the FITS HDU to read.
+            axis=0,  # Index (int) of the FITS HDU to read.
+            max_abs_value=1e6
         ) -> None:
         """
         Read the data and noise FITS files of every band.
@@ -83,6 +127,14 @@ class Field:
         axis : int
             The index of the HDU, in each FITS file, from which the data
             and the header are read.
+        max_abs_value : float, optional
+            The data pixels with an absolute value larger than this
+            are not physical (for example the residuals of a failed
+            interpolation) and are set to NaN in memory, see
+            `_mask_unphysical`; the files are not modified. The
+            number of pixels blanked in each band is stored in the
+            attribute `masked_pixels`. The value is in the units of
+            the images; None disables the check.
 
         Raises
         ------
@@ -100,6 +152,9 @@ class Field:
 
         self.multibandimages = MultibandImage([])
 
+        # Number of pixels blanked in every band, see `max_abs_value`.
+        self.masked_pixels = {}
+
         for band in self.bands:
 
             data_path = obs_path_dict[band] + "_data"+extension
@@ -108,6 +163,9 @@ class Field:
             hdu = fits.open(data_path)[axis]
             data = hdu.data
             header = hdu.header
+
+            if max_abs_value is not None:
+                self.masked_pixels[band] = _mask_unphysical(data, max_abs_value)
 
             if noise_type == "rms":
                 noise_path = obs_path_dict[band] + "_noise"+extension

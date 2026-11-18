@@ -106,6 +106,21 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   once; `_combine_healpix(lazy=False)` computes the array once and
   keeps it in memory. The measurements only run in parallel with
   `backend='processes'`.
+- The r image of the Hydra S mosaic has 80 pixels with values up to
+  1e37 in absolute value, which gave signal-to-noise ratios of 1e33
+  around them. They are blanked by `Field(max_abs_value=1e6)`; 11
+  more pixels between 1e5 and 1e6 are kept. Blanking them changed 2
+  of the 26133 sources.
+- Half-precision detection cutouts (`det_dtype=numpy.float16`) save
+  0.08 GB of the 3 GB peak on the Hydra S mosaic and do not change
+  the run time. They must be converted to single precision before
+  any computation (numpy is 17 to 40 times slower on half
+  precision, `scipy.ndimage` refuses it, and photutils deblends
+  differently); `pipelines.deblend` does the conversion. After it,
+  the number of children is unchanged and 1.8% of the sources have
+  a few pixels assigned to another child.
+- One file per source and array: the 78399 files of the Hydra S
+  detection hold 0.21 GB but take 0.49 GB on disk.
 - The sources returned by `detect` (`keep_sources=True`) and the
   deblending stage still hold every source in memory.
 - Compared with version 0.1.0 on the central 6000 x 6000 pixels of

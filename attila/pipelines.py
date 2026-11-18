@@ -249,6 +249,7 @@ def _detect_healpix(
         n_workers: int = 4,
         backend: str = 'processes',
         keep_sources: bool = True,
+        det_dtype = np.float32,
     ):
     """
     Detect, measure and save the sources of a HEALPix tiling.
@@ -299,6 +300,9 @@ def _detect_healpix(
         nothing is kept and the returned container only has the
         table: the sources are read back from the output folder
         with `Sources.load_light`.
+    det_dtype
+        The type of the cutouts of the detection array stored in the
+        sources, `numpy.float32` or `numpy.float16`.
 
     Returns
     -------
@@ -389,7 +393,8 @@ def _detect_healpix(
             threshold = threshold,
             backend = backend,
             measure = measure,
-            sink = sink
+            sink = sink,
+            det_dtype = det_dtype
         )
 
     sources = Sources(kept, header)
@@ -708,7 +713,7 @@ def _deblend_source(source, nlevels):
         warnings.simplefilter("ignore")
 
         source.deblend = photutils_deblend(
-            detection_array=source.det_arr,
+            detection_array=np.asarray(source.det_arr, dtype=np.float32),
             segmap=SegmentationImage(source.label*source.segment.astype(int)),
             nlevels=nlevels,
         )

@@ -675,7 +675,33 @@ def _segment_cutout(det_arr, box, detection_function):
     return cutout, np.asarray(getattr(segmap, 'data', segmap))
 
 
-def _candidate(cutout, labels, label, obj_slices, box):
+def _stored(det, dtype):
+    """
+    Copy a cutout of the detection array in the type it is stored in.
+
+    Parameters
+    ----------
+    det : numpy.ndarray
+        The cutout.
+    dtype : numpy.dtype
+        `numpy.float32` or `numpy.float16`. Half precision keeps
+        about three significant digits; the values are clipped to
+        its range (6.5e4) before the conversion.
+
+    Returns
+    -------
+    numpy.ndarray
+        The copy.
+    """
+    if np.dtype(dtype) == np.float16:
+        limit = float(np.finfo(np.float16).max)
+
+        return np.clip(det, -limit, limit).astype(np.float16)
+
+    return np.array(det, dtype=dtype)
+
+
+def _candidate(cutout, labels, label, obj_slices, box, det_dtype=np.float32):
     """
     Describe one segment of a cutout in full-image coordinates.
 
@@ -714,7 +740,7 @@ def _candidate(cutout, labels, label, obj_slices, box):
 
     return {
         'segment': segment,
-        'det_arr': np.array(det, dtype=np.float32),
+        'det_arr': _stored(det, det_dtype),
         'bbox': (y0 + sl_y.start, y0 + sl_y.stop, x0 + sl_x.start, x0 + sl_x.stop),
         'area': int(np.count_nonzero(segment)),
         'peak': (int(y0 + sl_y.start + peak_y), int(x0 + sl_x.start + peak_x)),
@@ -915,7 +941,8 @@ def _to_sources(candidates, header):
     return Sources(sources_list, header)
 
 
-def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=None, header=None, measure=None):
+def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=None, header=None, measure=None,
+                 det_dtype=np.float32):
     """
     Detect, and optionally measure, the sources of one cell.
 
@@ -989,7 +1016,7 @@ def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=Non
             seeds.append(((int(oy0 + sl_y.start + seed_y), int(ox0 + sl_x.start + seed_x)), outer))
 
         else:
-            candidates.append(_candidate(cutout, labels, label, obj_slices, outer))
+            candidates.append(_candidate(cutout, labels, label, obj_slices, outer, det_dtype))
 
     owned = []
 
@@ -1013,7 +1040,7 @@ def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=Non
     return sources, measured, seeds, coarse
 
 
-def _resolve_open(det_arr, seeds, box, detection_function):
+def _resolve_open(det_arr, seeds, box, detection_function, det_dtype=np.float32):
     """
     Detect again the sources that were cut by the border of a cutout.
 
@@ -1054,7 +1081,7 @@ def _resolve_open(det_arr, seeds, box, detection_function):
         whole_image = box == (0, shape[0], 0, shape[1])
 
         if whole_image or not any(_touches_border(objects[label - 1], box, shape) for label in wanted):
-            return [_candidate(cutout, labels, label, objects[label - 1], box) for label in wanted]
+            return [_candidate(cutout, labels, label, objects[label - 1], box, det_dtype) for label in wanted]
 
         y0, y1, x0, x1 = box
         half_y, half_x = (y1 - y0 + 1) // 2, (x1 - x0 + 1) // 2
@@ -1074,7 +1101,8 @@ def _detect_cell_shared(index):
 
 def _resolve_open_shared(task):
     """Run `_resolve_open` on the shared arguments, in a worker process."""
-    return _resolve_open(_SHARED_DETECTION['det_arr'], task[0], task[1], _SHARED_DETECTION['detection_function'])
+    return _resolve_open(_SHARED_DETECTION['det_arr'], task[0], task[1], _SHARED_DETECTION['detection_function'],
+                         _SHARED_DETECTION['det_dtype'])
 
 
 def _iter_tasks(function, shared_function, tasks, n_workers, backend, progress):
@@ -1164,6 +1192,7 @@ def detect_in_cells(
         threshold: Optional[float] = None,
         backend: str = 'threads',
         measure: Optional[Callable] = None,
+        det_dtype = np.float32,
         sink: Optional[Callable] = None,
     ) -> Sources:
     """
@@ -1246,6 +1275,11 @@ def detect_in_cells(
         labels, and the result of `measure`. If given, the sources
         are not kept and an empty container is returned.
 
+    det_dtype
+        The type of the cutouts of the detection array stored in the
+        sources: `numpy.float32`, or `numpy.float16` to halve their
+        size. The detection itself always uses `det_arr` as it is.
+
     Returns
     -------
     Sources
@@ -1267,13 +1301,13 @@ def detect_in_cells(
         header = tiling.header_dict[band]
 
     shared = dict(det_arr=det_arr, tiling=tiling, band=band, detection_function=detection_function,
-                  threshold=threshold, header=header, measure=measure)
+                  threshold=threshold, header=header, measure=measure, det_dtype=det_dtype)
 
     def run(index):
         return _detect_cell(index=index, **shared)
 
     def resolve(task):
-        return _resolve_open(det_arr, task[0], task[1], detection_function)
+        return _resolve_open(det_arr, task[0], task[1], detection_function, det_dtype)
 
     kept = []
     peaks_found = set()
