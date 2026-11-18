@@ -50,6 +50,8 @@
     also what happens, with a warning, if a future photutils no
     longer provides the class. `tests/test_deblending.py` compares
     the two and should be run after updating photutils.
+- `pipelines.deblend` hands the largest sources to the pool first,
+  one at a time, and restores the order of the catalogue.
 - Packed catalogues: the HEALPix detection saves one zstd file per
   cell (`write_pack`, `read_pack`, folder `cells/`) instead of three
   files per source; `Sources.load_light` reads both layouts. Only

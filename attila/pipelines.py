@@ -802,11 +802,19 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
     # Number of multi-threshold deblending levels.
     nlevels = 10
 
+    # The largest sources take most of the time: they are handed out
+    # first, one at a time, so that none of them starts late or waits
+    # behind another one. The order of the catalogue is then restored.
+    order = sorted(range(len(sources)), key=lambda index: -sources.sources[index].area)
+
     with Pool(processes=8) as pool:
-        sources.sources = list(tqdm(
-            pool.imap(partial(_deblend_source, nlevels=nlevels), sources.sources),
+        deblended = list(tqdm(
+            pool.imap(partial(_deblend_source, nlevels=nlevels), [sources.sources[index] for index in order], chunksize=1),
             total=len(sources)
         ))
+
+    for index, source in zip(order, deblended):
+        sources.sources[index] = source
 
     deblended_sources = Sources.from_deblend(sources)
 

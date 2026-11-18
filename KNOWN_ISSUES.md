@@ -106,8 +106,10 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   non-positive minimum or more than 200 candidate peaks. The fast
   deblender does the same. Which sources are affected was not
   checked.
-- The deblending pool hands the sources out in catalogue order and
-  holds all of them in memory.
+- The deblending stage holds all the sources in memory. The pool
+  takes the largest sources first (22 s -> 19 s on the Hydra S
+  mosaic with 8 processes); the wall time is now set by the largest
+  source, 17 s.
 
 ## 5. Open: HEALPix tiling (0.2.0, in development)
 
