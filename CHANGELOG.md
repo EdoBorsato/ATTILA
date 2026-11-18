@@ -2,7 +2,12 @@
 
 ## 0.2.0 (in development)
 
-- Nothing yet.
+- Added `attila.tiling.healpix`: tiles defined as HEALPix cells and
+  detection by cell ownership (`detect_in_cells`), with no stitching
+  of the tile segmentations. `pipelines.combine` and
+  `pipelines.detect` accept a `HealpixTiling`.
+- Added `gaussian_smooth`, a separable Gaussian smoothing that
+  ignores invalid pixels.
 
 ## 0.1.0 (2026-11-18)
 

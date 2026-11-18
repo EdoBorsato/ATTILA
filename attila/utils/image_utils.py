@@ -203,3 +203,56 @@ def pad_to_shape(array, shape):
 #     elif array.ndim == 2:
 #         return np.asarray([to_mag(value, zpt_i, pix_scale_i) for
 #                             value, zpt_i, pix_scale_i, in zip(array, self.zpt_dict.values(), self.pixel_scale_dict.values())])
+
+
+def gaussian_smooth(array: npt.ArrayLike, sigma: float, truncate: float = 4.0) -> np.ndarray:
+    """
+    Smooth an image with a Gaussian kernel, ignoring invalid pixels.
+
+    The result is the normalised convolution
+
+        G * (array * valid) / G * valid,
+
+    where `G` is the Gaussian kernel and `valid` is 1 on the finite
+    pixels and 0 on the others, so that invalid pixels do not
+    contribute and are filled with the weighted mean of their valid
+    neighbours. Outside the image the data are taken as valid zeros.
+    This reproduces `astropy.convolution.convolve_fft` with its
+    default arguments (`nan_treatment='interpolate'`,
+    `boundary='fill'`) and a `Gaussian2DKernel`, at a fraction of the
+    cost, because the Gaussian filter is separable.
+
+    The value of a pixel only depends on the pixels within
+    `truncate * sigma` of it: a cutout with a margin at least that
+    wide gives the same values as the full image.
+
+    Parameters
+    ----------
+    array
+        The image, shape `(n_y, n_x)`.
+    sigma
+        The standard deviation of the kernel in pixels.
+    truncate
+        The half-size of the kernel in units of `sigma`. The default
+        matches the size of `Gaussian2DKernel`.
+
+    Returns
+    -------
+    numpy.ndarray
+        The smoothed image, as 32-bit floats. Pixels with no valid
+        neighbour within the kernel are 0.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    array = np.asarray(array, dtype=np.float32)
+
+    valid = np.isfinite(array)
+
+    smoothed = gaussian_filter(np.where(valid, array, np.float32(0)), sigma, truncate=truncate, mode='constant', cval=0.0)
+
+    if valid.all():
+        return smoothed
+
+    weight = gaussian_filter(valid.astype(np.float32), sigma, truncate=truncate, mode='constant', cval=1.0)
+
+    return np.divide(smoothed, weight, out=np.zeros_like(smoothed), where=weight > 0)

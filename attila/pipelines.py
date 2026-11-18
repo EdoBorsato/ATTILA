@@ -34,6 +34,8 @@ from astropy.convolution import Gaussian2DKernel, convolve_fft
 from functools import partial
 
 from attila.tiling.tilingrid import Tiling, _combine_labels
+from attila.tiling.healpix import HealpixTiling, detect_in_cells
+from attila.utils.image_utils import gaussian_smooth
 from attila.tiling.tiles import ConvolutionTile, BaseTile, DetectionTile
 from attila.detection.detection import segment
 from attila.tiling.sources import Sources
@@ -55,10 +57,275 @@ from typing import Dict
 
 from attila.deblending.deblending import deblend as photutils_deblend
 from multiprocessing import Pool
+from multiprocessing.pool import ThreadPool
+from os import path
+
+def _measure_and_save(sources: Sources, field: Field, extinction_tiling, threshold, nconn):
+    """
+    Compute the extinction and the properties of detected sources.
+
+    This is the common end of the detection stage (steps 5 to 7 of
+    `detect`): the Galactic extinction is computed at the centres of
+    the tiles of `extinction_tiling` and assigned to the sources, the
+    image cutouts are extracted, the measurements of
+    `Properties.detection_properties` are run and the sources are
+    saved in `./output/detection/<threshold>_<nconn>/`.
+
+    Parameters
+    ----------
+    sources
+        The detected sources.
+    field
+        The field with the images of the bands, in counts.
+    extinction_tiling : Tiling or HealpixTiling
+        The tiling whose `centres` and `polygons` define the grid of
+        extinction values.
+    threshold : float
+        The detection threshold, used in the name of the output
+        folder.
+    nconn : int
+        The minimum number of connected pixels, used in the name of
+        the output folder.
+
+    Returns
+    -------
+    sources : Sources
+        The sources, with their `properties` table.
+    ext : Extinction
+        The extinction object, holding the grid of extinction values.
+    """
+
+    attila_logger.logger.info("Compute the extinction from the detection sources...")
+
+    ext = Extinction(
+        field = field,
+        extinction_map_name = 'sfd',
+        bands=['SLOAN_SDSS.g', 'SLOAN_SDSS.r'],
+        )
+
+    ext.compute_extinction_from_tiling(coord_list=extinction_tiling.centres,
+                                    regions=extinction_tiling.polygons)
+
+    A_lambda = ext.apply_grid_to_sources(sources)
+
+    attila_logger.logger.info("Load the data")
+
+    sources.get_data(field.multibandimages)
+
+    attila_logger.logger.info("Compute the properties of the sources...")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        props = Properties(sources, field)
+
+        props.A = A_lambda
+        sources = props.detection_properties()
+
+    attila_logger.logger.info("All done! Outputting the detection results...")
+
+    os.makedirs(f'./output/detection/{threshold}_{nconn}', exist_ok=True)
+
+    sources.save_light(f'./output/detection/{threshold}_{nconn}')
+
+    return sources, ext
+
+
+def _snr_smoothed(data_g, data_r, noise_g, noise_r, sigma):
+    """
+    Return the smoothed g + r signal-to-noise image.
+
+    Parameters
+    ----------
+    data_g, data_r : numpy.ndarray
+        The images of the two bands, in counts.
+    noise_g, noise_r : numpy.ndarray
+        The RMS noise maps of the two bands.
+    sigma : float
+        The standard deviation of the Gaussian kernel in pixels.
+
+    Returns
+    -------
+    numpy.ndarray
+        `(g + r) / sqrt(noise_g^2 + noise_r^2)`, smoothed with
+        `attila.utils.image_utils.gaussian_smooth`.
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        snr = (data_g + data_r) / np.sqrt(noise_g**2 + noise_r**2)
+
+    return gaussian_smooth(snr, sigma)
+
+
+def _combine_healpix(field: Field, tiling: HealpixTiling, sigma: float = 2.0, n_workers: int = 4):
+    """
+    Build the detection array on a HEALPix tiling.
+
+    It is the counterpart of `combine` for a `HealpixTiling`. For
+    every cell, the g and r images and noise maps are cut out with a
+    margin as wide as the smoothing kernel, the signal-to-noise image
+    is computed and smoothed, and the part that covers the cell is
+    written into the full-size detection array. Thanks to the margin
+    the values do not depend on the cell they are computed in, so
+    nothing has to be combined where the cutouts overlap, and the
+    cells can be processed in parallel.
+
+    Parameters
+    ----------
+    field
+        The field with the bands `'g'` and `'r'`.
+    tiling
+        The tiling of the field.
+    sigma
+        The standard deviation of the Gaussian kernel in pixels.
+    n_workers
+        The number of threads that process the cells.
+
+    Returns
+    -------
+    output_detarray_dict : dict
+        `{'gr': {'detection_array': numpy.ndarray}}`, 32-bit floats.
+    field : Field
+        The input field, unchanged.
+    tiling : HealpixTiling
+        A new tiling that also includes the band `'gr'`.
+    """
+    output_detarray_dict = {
+        'gr': {
+            'detection_array': np.zeros(field.multibandimages['g'].shape, dtype=np.float32),
+        }
+    }
+
+    tiling = tiling.add_band('gr', field.multibandimages.property_dict('header')['g'])
+
+    input_dict = field.multibandimages.property_dict(['data', 'noise'])
+    input_dict = {band: input_dict[band] for band in ('g', 'r')}
+
+    # Half-size of the kernel: the margin that makes the smoothed
+    # values independent of the cutout.
+    margin = int(np.ceil(4 * sigma)) + 1
+
+    def run(i):
+        combine_tile = tiling.get_tile_data(
+            index = i,
+            Tile = BaseTile,
+            input_dict = input_dict,
+            margin_pixels = margin
+        )
+
+        convolve_tile = ConvolutionTile(
+            shape=combine_tile.shape,
+            overlap=combine_tile.overlap,
+            bands=['gr'],
+            index=i
+        )
+
+        convolve_tile.inner_box = {'gr': combine_tile.inner_box['g']}
+        convolve_tile.outer_box = {'gr': combine_tile.outer_box['g']}
+
+        convolve_tile.add_data(
+            band = 'gr',
+            key = 'detection_array',
+            arr = _snr_smoothed(
+                combine_tile.data2D['g']['data'],
+                combine_tile.data2D['r']['data'],
+                combine_tile.data2D['g']['noise'],
+                combine_tile.data2D['r']['noise'],
+                sigma
+            ),
+            reg = combine_tile.reg['g']['data']
+        )
+
+        tiling.tile_to_mosaic(
+            tile = convolve_tile,
+            band = 'gr',
+            output_dict = output_detarray_dict
+        )
+
+    with ThreadPool(n_workers) as pool:
+        list(tqdm(pool.imap(run, range(len(tiling.cell_ids))), total=len(tiling.cell_ids)))
+
+    attila_logger.logger.info("Convolution and combination done.")
+
+    return output_detarray_dict, field, tiling
+
+
+def _detect_healpix(output_detarray_dict: Dict, field: Field, tiling: HealpixTiling, threshold, nconn, n_workers: int = 4):
+    """
+    Detect and measure the sources on a HEALPix tiling.
+
+    It is the counterpart of `detect` for a `HealpixTiling`. The
+    cells are segmented independently with
+    `attila.tiling.healpix.detect_in_cells`: every source belongs to
+    the cell that contains its peak, and a source cut by the border
+    of a cutout is detected again on a larger one, so no mosaic of
+    labels is built and nothing is relabelled. The extinction grid is
+    made of the HEALPix cells of order 10 (3.4 arcmin), or of the
+    cells of the tiling if they are smaller. The HEALPix cell of every
+    source is written in the column `healpix_cell` of the properties.
+
+    Parameters
+    ----------
+    output_detarray_dict
+        The detection array, as returned by `combine`.
+    field
+        The field with the images of the bands, in counts.
+    tiling
+        The tiling returned by `combine`, which includes the band
+        `'gr'`.
+    threshold : float
+        The detection threshold in units of sigma.
+    nconn : int
+        The minimum number of connected pixels of a source.
+    n_workers
+        The number of threads that process the cells.
+
+    Returns
+    -------
+    tuple
+        The same six values as `detect`.
+    """
+    detection_function = partial(
+        segment,
+        nconn = nconn,
+        threshold = threshold,
+        fill = True
+        )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        sources = detect_in_cells(
+            det_arr = output_detarray_dict['gr']['detection_array'],
+            tiling = tiling,
+            band = 'gr',
+            detection_function = detection_function,
+            n_workers = n_workers
+        )
+
+    extinction_tiling = HealpixTiling(
+        header_dict = tiling.header_dict,
+        order = max(tiling.order, 10)
+    )
+
+    extinction_tiling.make_tiles()
+
+    sources, ext = _measure_and_save(sources, field, extinction_tiling, threshold, nconn)
+
+    sources.properties['healpix_order'] = tiling.order
+    sources.properties['healpix_cell'] = [source.cell_id for source in sources]
+
+    sources.properties.to_csv(path.join(f'./output/detection/{threshold}_{nconn}', 'properties.csv'))
+
+    return sources, ext, field, tiling, threshold, nconn
+
 
 def combine(field: Field, tiling: Tiling):
     """
     Build the smoothed g + r signal-to-noise detection array.
+
+    With a `HealpixTiling` the work is done by `_combine_healpix`,
+    which processes the cells independently; the description below
+    applies to the rectangular `Tiling`.
 
     For every tile of the tiling, the cutouts of the g and r images and
     of their noise maps are combined into the signal-to-noise ratio of
@@ -109,6 +376,9 @@ def combine(field: Field, tiling: Tiling):
     """
 
     attila_logger.logger.info("starting the preprocessing to compute the desired detection array")
+
+    if isinstance(tiling, HealpixTiling):
+        return _combine_healpix(field, tiling)
 
     # Smoothing kernel: a Gaussian with a sigma of 2 pixels.
     kernel = Gaussian2DKernel(x_stddev=2)
@@ -178,6 +448,10 @@ def combine(field: Field, tiling: Tiling):
 def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
     """
     Detect the sources on the detection array and measure them.
+
+    With a `HealpixTiling` the work is done by `_detect_healpix`, in
+    which every source belongs to the cell that contains its peak and
+    steps 2 and 3 below (mosaicking and relabelling) do not exist.
 
     The stage performs these steps:
 
@@ -257,6 +531,9 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
 
     attila_logger.logger.info(f"The detection will done with: nconn = {nconn} and threshold = {threshold}")
 
+    if isinstance(tiling, HealpixTiling):
+        return _detect_healpix(output_detarray_dict, field, tiling, threshold, nconn)
+
     detection_function = partial(
         segment,
         nconn = nconn,
@@ -302,8 +579,6 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
         header = tiling.header_dict['gr']
     )
 
-    attila_logger.logger.info("Compute the extinction from the detection sources...")
-
     tile_shape_sky = (3 * u.arcmin, 3 * u.arcmin)
 
     extinction_tiling = Tiling(
@@ -314,36 +589,7 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
 
     extinction_tiling.make_tiles()
 
-    ext = Extinction(
-        field = field,
-        extinction_map_name = 'sfd',
-        bands=['SLOAN_SDSS.g', 'SLOAN_SDSS.r'],
-        )
-
-    ext.compute_extinction_from_tiling(coord_list=extinction_tiling.centres,
-                                    regions=extinction_tiling.polygons)
-
-    A_lambda = ext.apply_grid_to_sources(sources)
-
-    attila_logger.logger.info("Load the data")
-
-    sources.get_data(field.multibandimages)
-
-    attila_logger.logger.info("Compute the properties of the sources...")
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-
-        props = Properties(sources, field)
-
-        props.A = A_lambda
-        sources = props.detection_properties()
-
-    attila_logger.logger.info("All done! Outputting the detection results...")
-
-    os.makedirs(f'./output/detection/{threshold}_{nconn}', exist_ok=True)
-
-    sources.save_light(f'./output/detection/{threshold}_{nconn}')
+    sources, ext = _measure_and_save(sources, field, extinction_tiling, threshold, nconn)
 
     return sources, ext, field, tiling, threshold, nconn
 

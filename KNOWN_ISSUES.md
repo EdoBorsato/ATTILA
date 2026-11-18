@@ -92,7 +92,22 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   time (3 of 150 sampled sources took 72 of 75 s), so the pool is
   limited by its slowest items.
 
-## 5. Open: comparison scripts (`mtobjects/core`, not tracked)
+## 5. Open: HEALPix tiling (0.2.0, in development)
+
+- The detection array is still one full-size array in memory, so the
+  tiles do not yet make the pipeline out-of-core.
+- On a field that fits in memory the cells are slower than segmenting
+  the whole array at once (12 s against 4 s on the Hydra S mosaic):
+  one segment of 6.5 million pixels is detected again on a cutout
+  grown around it.
+- The smoothing differs from the rectangular path by up to 1e-3 in
+  S/N (checked on one 3000 pixel block), and the two paths treat the
+  image border differently; their catalogues were not compared.
+- The cell polygons are in (RA, Dec) degrees and are not handled
+  across RA = 0.
+- Deblending and properties still run per source, not per cell.
+
+## 6. Open: comparison scripts (`mtobjects/core`, not tracked)
 
 - `match_known_sources_to_mto.py`, `check_attila_footprint_and_match.
   py`: `add_prefix` is applied to columns that already carry the
@@ -106,7 +121,7 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   folder; the applied value is hard-coded in each `debfunc`.
   `npixels=24/2` passes a float.
 
-## 6. Fixed in the clean-up commit
+## 7. Fixed in version 0.1.0
 
 Results:
 

@@ -15,15 +15,18 @@ This repository is under active development.
 
 1. **Field** (`attila.field`): load the images and noise maps of every
    band; attach distance, redshift and zero points.
-2. **Tiling** (`attila.tiling.tilingrid`): cover the common footprint
-   of the bands with overlapping RA/Dec tiles; cut tiles out and paste
-   them back into a mosaic.
+2. **Tiling**: split the common footprint of the bands into tiles,
+   either HEALPix cells (`attila.tiling.healpix`) or overlapping
+   RA/Dec rectangles (`attila.tiling.tilingrid`). The data of a tile
+   are always cut out on the native pixel grid.
 3. **Combine** (`attila.pipelines.combine`): per tile, compute
    `(g + r) / sqrt(noise_g^2 + noise_r^2)`, smooth it with a Gaussian
-   kernel and mosaic the result into the detection array.
-4. **Detect** (`attila.pipelines.detect`): threshold each tile with
-   `photutils.segmentation.detect_sources`, merge the tile labels,
-   relabel the mosaic and store one `Source` per segment.
+   kernel and write the result into the detection array.
+4. **Detect** (`attila.pipelines.detect`): segment each tile with
+   `photutils.segmentation.detect_sources` and store one `Source` per
+   segment. With HEALPix cells a source belongs to the cell that
+   contains its peak; with rectangles the tile labels are merged and
+   the mosaic is relabelled.
 5. **Measure** (`attila.properties`): Galactic extinction (SFD map,
    G23 curve, synphot filters), magnitudes, surface brightnesses and
    centroids, written to `properties.csv`.
@@ -41,6 +44,7 @@ This repository is under active development.
 | `attila/attila_logger.py` | 26 | Package logger (console and `example.log`). |
 | `attila/field/field.py` | 481 | `Field`, `Image`, `MultibandImage`. |
 | `attila/tiling/tilingrid.py` | 1015 | `Tiling`, grid and sparse tile builders, `guess_shape`. |
+| `attila/tiling/healpix.py` | 982 | `HealpixTiling`, `detect_in_cells`: HEALPix tiles, no stitching. |
 | `attila/tiling/tiles.py` | 473 | `BaseTile`, `ConvolutionTile`, `DetectionTile`. |
 | `attila/tiling/sources.py` | 1377 | `Source`, `Sources`, flat file layout, zstd compression. |
 | `attila/tiling/sources_dev.py` | 12 | Deprecated alias of `sources.py`, kept for old scripts. |
@@ -122,6 +126,36 @@ The fitting and interactive modules also use `astrophot`, `emcee`,
 them are installed by the commands above.
 
 ## Running the detection pipeline
+
+With HEALPix tiles:
+
+```python
+from astropy import units as u
+
+from attila import pipelines
+from attila.field.field import Field
+from attila.tiling.healpix import HealpixTiling
+
+field = Field({"g": "path/prefix_g", "r": "path/prefix_r"})
+field.zpt = {"g": 30.0, "r": 30.0}
+
+# Order 9 cells are 6.9 arcmin wide, order 10 cells 3.4 arcmin.
+tiling = HealpixTiling(
+    field.multibandimages.property_dict("header"),
+    order=9,
+    margin_sky=1 * u.arcmin,
+)
+tiling.make_tiles()
+
+sources = pipelines.deblend(
+    *pipelines.detect(*pipelines.combine(field, tiling))
+)
+```
+
+The catalogue does not depend on the order or on the margin: a source
+larger than a cell is detected whole and assigned to the cell of its
+peak, stored in the column `healpix_cell`.
+
 
 The pipeline is driven by a script that lives next to the data and
 defines the stages with the parameters of that data set. It expects
