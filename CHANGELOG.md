@@ -17,6 +17,13 @@
 - `detect_in_cells`: sources cut by a cutout are grouped and detected
   again in parallel on a box found in one step (`threshold`), and the
   cells can run in worker processes (`backend='processes'`).
+- Streaming HEALPix detection: `combine` returns a
+  `LazyDetectionArray` that computes the cutout of a cell when it is
+  requested, reading only that part of the images; `detect` segments,
+  measures and saves the sources cell by cell and releases the
+  cutout. The memory in use scales with the number of workers and
+  with the largest source, not with the field. The catalogue is
+  unchanged.
 - Added `gaussian_smooth`, a separable Gaussian smoothing that
   ignores invalid pixels.
 

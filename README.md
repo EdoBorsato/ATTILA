@@ -20,8 +20,10 @@ This repository is under active development.
    RA/Dec rectangles (`attila.tiling.tilingrid`). The data of a tile
    are always cut out on the native pixel grid.
 3. **Combine** (`attila.pipelines.combine`): per tile, compute
-   `(g + r) / sqrt(noise_g^2 + noise_r^2)`, smooth it with a Gaussian
-   kernel and write the result into the detection array.
+   `(g + r) / sqrt(noise_g^2 + noise_r^2)` and smooth it with a
+   Gaussian kernel. With HEALPix cells this is done when the cell is
+   detected, so only the cutouts being worked on are in memory; with
+   rectangles the result is written into a full detection array.
 4. **Detect** (`attila.pipelines.detect`): segment each tile with
    `photutils.segmentation.detect_sources` and store one `Source` per
    segment. With HEALPix cells a source belongs to the cell that

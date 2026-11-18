@@ -94,11 +94,20 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
 
 ## 5. Open: HEALPix tiling (0.2.0, in development)
 
-- The detection array is still one full-size array in memory, so the
-  tiles do not yet make the pipeline out-of-core.
-- On the Hydra S mosaic the cells with 8 threads take as long as
-  segmenting the whole array at once (5 s); worker processes are not
-  faster than threads at this field size (6 s with 8 processes).
+- Memory on the Hydra S mosaic (21112 x 14611 pixels, images
+  memory-mapped): the detection alone peaks 0.5 GB above the bare
+  process with one worker, set by the largest group of sources cut
+  by a cutout (a box of 3080 x 3056 pixels); the whole stage with
+  measurements peaks at 1.4 GB with one worker and 3.1 GB with 8
+  processes.
+- Speed on the same field, detection, measurements and saving:
+  100 s with one worker, 27 s with 8 processes. The cutouts of the
+  cells overlap, so part of the smoothing is computed more than
+  once; `_combine_healpix(lazy=False)` computes the array once and
+  keeps it in memory. The measurements only run in parallel with
+  `backend='processes'`.
+- The sources returned by `detect` (`keep_sources=True`) and the
+  deblending stage still hold every source in memory.
 - Compared with version 0.1.0 on the central 6000 x 6000 pixels of
   the Hydra S mosaic (threshold 3, 25 pixels, sigma 3): 3210 of the
   3212 sources of 0.1.0 are recovered, 98.3% with an identical

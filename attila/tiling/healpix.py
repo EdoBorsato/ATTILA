@@ -27,7 +27,9 @@ never counted twice, whatever its size.
 import multiprocessing
 import pickle
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from os import path
 from threading import Lock
 from typing import Callable, Dict, Optional, Tuple
@@ -719,19 +721,215 @@ def _candidate(cutout, labels, label, obj_slices, box):
     }
 
 
-def _detect_cell(det_arr, tiling, index, band, detection_function):
-    """
-    Detect the sources of one cell.
+# Side in pixels of the blocks of the coarse map that is used to find
+# the extent of the sources cut by a cutout.
+_BLOCK = 8
 
-    The cutout of the cell is segmented. A segment that does not reach
-    the border of the cutout is complete: it is kept if its peak lies
-    in the cell. A segment that reaches the border and overlaps the
-    bounding box of the cell is reported as open, to be detected again
-    on a larger cutout.
+
+class LazyDetectionArray:
+    """
+    A detection array that is computed piece by piece, on request.
+
+    The object stands for a full-size detection array without holding
+    it in memory. Slicing it with two slices, `array[y0:y1, x0:x1]`,
+    computes that box only: the function given at construction is
+    called on the box enlarged by a margin, and the margin is trimmed
+    from its result. With a margin at least as wide as the footprint
+    of the operation (the half-size of a smoothing kernel) the values
+    are the same as those of the array computed in one piece.
+
+    Attributes
+    ----------
+    shape : tuple of int
+        The shape `(n_y, n_x)` of the full array.
+    margin : int
+        The margin in pixels added around a box before computing it.
+    """
+
+    def __init__(self, shape: Tuple[int, int], function: Callable, margin: int) -> None:
+        """
+        Store the shape, the function and the margin.
+
+        Parameters
+        ----------
+        shape
+            The shape `(n_y, n_x)` of the full array.
+        function
+            The function that computes a piece of the array: it
+            receives a box `(y0, y1, x0, x1)` in full-image pixels and
+            returns the array of that box.
+        margin
+            The margin in pixels added around a requested box.
+        """
+        self.shape = tuple(shape)
+        self.function = function
+        self.margin = int(margin)
+
+    @property
+    def ndim(self):
+        """The number of dimensions of the array."""
+        return 2
+
+    def __getitem__(self, key):
+        """
+        Compute a box of the array.
+
+        Parameters
+        ----------
+        key : tuple of slice
+            The two slices `(y, x)` of the box, with unit steps.
+
+        Returns
+        -------
+        numpy.ndarray
+            The array of the box.
+        """
+        sl_y, sl_x = key
+
+        y0, y1, _ = sl_y.indices(self.shape[0])
+        x0, x1, _ = sl_x.indices(self.shape[1])
+
+        oy0, oy1, ox0, ox1 = _clipped_box(
+            (y0 - self.margin, y1 + self.margin, x0 - self.margin, x1 + self.margin), self.shape
+        )
+
+        piece = self.function((oy0, oy1, ox0, ox1))
+
+        return piece[y0 - oy0:y1 - oy0, x0 - ox0:x1 - ox0]
+
+    def materialize(self, block: int = 4096) -> np.ndarray:
+        """
+        Compute the full array, block by block.
+
+        Parameters
+        ----------
+        block
+            The side in pixels of the blocks that are computed.
+
+        Returns
+        -------
+        numpy.ndarray
+            The full array, as 32-bit floats.
+        """
+        full = np.zeros(self.shape, dtype=np.float32)
+
+        for y0 in range(0, self.shape[0], block):
+            for x0 in range(0, self.shape[1], block):
+                full[y0:y0 + block, x0:x0 + block] = self[y0:y0 + block, x0:x0 + block]
+
+        return full
+
+
+def _coarse_piece(cutout, box, shape, threshold):
+    """
+    Reduce a cutout to the blocks of the coarse map it contains.
+
+    The coarse map divides the image into blocks of `_BLOCK` pixels
+    and marks a block if any of its pixels is above the threshold.
+    Only the blocks that lie entirely inside the cutout are returned.
 
     Parameters
     ----------
-    det_arr : numpy.ndarray
+    cutout : numpy.ndarray
+        The cutout of the detection array.
+    box : tuple of int
+        The box `(y0, y1, x0, x1)` of the cutout in the image.
+    shape : tuple of int
+        The shape `(n_y, n_x)` of the image.
+    threshold : float
+        The detection threshold.
+
+    Returns
+    -------
+    tuple
+        The first block along y and x, and the boolean array of the
+        blocks.
+    """
+    y0, y1, x0, x1 = box
+
+    def block_range(start, stop, size):
+        first = -(-start // _BLOCK)
+        # The last block of the image may be incomplete.
+        last = -(-size // _BLOCK) if stop == size else stop // _BLOCK
+
+        return first, max(last, first)
+
+    by0, by1 = block_range(y0, y1, shape[0])
+    bx0, bx1 = block_range(x0, x1, shape[1])
+
+    above = cutout > threshold
+
+    piece = np.zeros((by1 - by0, bx1 - bx0), dtype=bool)
+
+    for i, block_y in enumerate(range(by0, by1)):
+        rows = above[block_y * _BLOCK - y0:min((block_y + 1) * _BLOCK, y1) - y0]
+
+        if not rows.any():
+            continue
+
+        columns = rows.any(axis=0)
+
+        for j, block_x in enumerate(range(bx0, bx1)):
+            piece[i, j] = columns[block_x * _BLOCK - x0:min((block_x + 1) * _BLOCK, x1) - x0].any()
+
+    return by0, bx0, piece
+
+
+def _to_sources(candidates, header):
+    """
+    Turn the segments found in a cutout into a `Sources` container.
+
+    Parameters
+    ----------
+    candidates : list of dict
+        The segments, as returned by `_candidate`, each with its
+        `cell_id`.
+    header : astropy.io.fits.Header
+        The header of the mosaic.
+
+    Returns
+    -------
+    Sources
+        The sources, labelled from 1 in the order of `candidates`,
+        with the attributes `cell_id` and `peak`.
+    """
+    sources_list = []
+
+    for label, candidate in enumerate(candidates, start=1):
+        iy0, iy1, ix0, ix1 = candidate['bbox']
+
+        source = Source(
+            segment=candidate['segment'],
+            det_arr=candidate['det_arr'],
+            label=label,
+            area=candidate['area'],
+            bbox=BoundingBox(ixmin=ix0, ixmax=ix1, iymin=iy0, iymax=iy1),
+            previous_label=0,
+        )
+
+        source.cell_id = candidate['cell_id']
+        source.peak = candidate['peak']
+
+        sources_list.append(source)
+
+    return Sources(sources_list, header)
+
+
+def _detect_cell(det_arr, tiling, index, band, detection_function, threshold=None, header=None, measure=None):
+    """
+    Detect, and optionally measure, the sources of one cell.
+
+    The cutout of the cell is taken from the detection array (and
+    computed at this point if the array is lazy) and segmented. A
+    segment that does not reach the border of the cutout is complete:
+    it is kept if its peak lies in the cell. A segment that reaches
+    the border and overlaps the bounding box of the cell is reported
+    as open, to be detected again on a larger box. The cutout is not
+    kept: the sources hold copies of their own boxes only.
+
+    Parameters
+    ----------
+    det_arr : numpy.ndarray or LazyDetectionArray
         The full detection array.
     tiling : HealpixTiling
         The tiling.
@@ -741,18 +939,32 @@ def _detect_cell(det_arr, tiling, index, band, detection_function):
         The band of the tiling the detection array belongs to.
     detection_function : callable
         The function that segments an array.
+    threshold : float, optional
+        If given, the blocks of the coarse map covered by the cutout
+        are also returned.
+    header : astropy.io.fits.Header, optional
+        The header of the mosaic, stored in the returned container.
+    measure : callable, optional
+        A function applied to the sources of the cell; its result is
+        returned with them.
 
     Returns
     -------
-    owned : list of dict
-        The complete segments owned by the cell (see `_candidate`).
+    sources : Sources
+        The complete sources owned by the cell.
+    measured : object
+        The result of `measure`, or None.
     seeds : list of tuple
         For every open segment, the position `(y, x)` in the image of
         one of its pixels and the box of the cutout it was seen in.
+    coarse : tuple or None
+        The piece of the coarse map (see `_coarse_piece`).
     """
-    inner, outer = tiling.cell_box(index, band)
+    inner, outer = tiling.cell_box(index, band, max(tiling.margin_pixels(band), _BLOCK))
 
     cutout, labels = _segment_cutout(det_arr, outer, detection_function)
+
+    coarse = None if threshold is None else _coarse_piece(cutout, outer, det_arr.shape, threshold)
 
     iy0, iy1, ix0, ix1 = inner
     oy0, _, ox0, _ = outer
@@ -779,71 +991,26 @@ def _detect_cell(det_arr, tiling, index, band, detection_function):
         else:
             candidates.append(_candidate(cutout, labels, label, obj_slices, outer))
 
-    if not candidates:
-        return [], seeds
+    owned = []
 
-    peaks = np.array([candidate['peak'] for candidate in candidates])
-    cells = tiling.cells_of_pixels(peaks[:, 1], peaks[:, 0], band)
+    if candidates:
+        peaks = np.array([candidate['peak'] for candidate in candidates])
+        cells = tiling.cells_of_pixels(peaks[:, 1], peaks[:, 0], band)
 
-    cell_id = tiling.cell_ids[index]
+        cell_id = int(tiling.cell_ids[index])
 
-    owned = [candidate for candidate, cell in zip(candidates, cells) if cell == cell_id]
+        for candidate, cell in zip(candidates, cells):
+            if cell == cell_id:
+                candidate['cell_id'] = cell_id
+                owned.append(candidate)
 
-    return owned, seeds
+        owned.sort(key=lambda candidate: candidate['peak'])
 
+    sources = _to_sources(owned, header)
 
-def _coarse_components(det_arr, threshold, block=8):
-    """
-    Label the regions above a threshold on a block-reduced array.
+    measured = measure(sources) if (measure is not None and len(sources) > 0) else None
 
-    The array is divided into blocks of `block` x `block` pixels; a
-    block is set if any of its pixels is above the threshold, and the
-    set blocks are labelled with 8-connectivity. Two pixels that are
-    connected above the threshold on the full array, even through a
-    gap of a few pixels, are in the same coarse region, so the box of
-    a coarse region contains the whole of every source in it.
-
-    Parameters
-    ----------
-    det_arr : numpy.ndarray
-        The full detection array.
-    threshold : float
-        The detection threshold, in the units of `det_arr`.
-    block : int
-        The side of the blocks in pixels.
-
-    Returns
-    -------
-    labels : numpy.ndarray
-        The coarse label map, shape `(ceil(n_y / block),
-        ceil(n_x / block))`.
-    boxes : list
-        For every coarse label, the slices of its bounding box in the
-        coarse map (`scipy.ndimage.find_objects`).
-    """
-    n_y, n_x = det_arr.shape
-    c_y, c_x = -(-n_y // block), -(-n_x // block)
-
-    coarse = np.zeros((c_y, c_x), dtype=bool)
-
-    full_y, full_x = (n_y // block) * block, (n_x // block) * block
-
-    above = det_arr > threshold
-
-    coarse[:n_y // block, :n_x // block] = above[:full_y, :full_x].reshape(
-        n_y // block, block, n_x // block, block).any(axis=(1, 3))
-
-    # Incomplete blocks on the upper borders.
-    if full_y < n_y:
-        coarse[-1, :n_x // block] = above[full_y:, :full_x].reshape(-1, n_x // block, block).any(axis=(0, 2))
-    if full_x < n_x:
-        coarse[:n_y // block, -1] = above[:full_y, full_x:].reshape(n_y // block, block, -1).any(axis=(1, 2))
-    if full_y < n_y and full_x < n_x:
-        coarse[-1, -1] = above[full_y:, full_x:].any()
-
-    labels, _ = ndimage.label(coarse, structure=np.ones((3, 3)))
-
-    return labels, ndimage.find_objects(labels)
+    return sources, measured, seeds, coarse
 
 
 def _resolve_open(det_arr, seeds, box, detection_function):
@@ -857,7 +1024,7 @@ def _resolve_open(det_arr, seeds, box, detection_function):
 
     Parameters
     ----------
-    det_arr : numpy.ndarray
+    det_arr : numpy.ndarray or LazyDetectionArray
         The full detection array.
     seeds : list of tuple of int
         The positions `(y, x)` in the image of one pixel of each
@@ -902,21 +1069,21 @@ _SHARED_DETECTION = None
 
 def _detect_cell_shared(index):
     """Run `_detect_cell` on the shared arguments, in a worker process."""
-    det_arr, tiling, band, detection_function = _SHARED_DETECTION
-
-    return _detect_cell(det_arr, tiling, index, band, detection_function)
+    return _detect_cell(index=index, **_SHARED_DETECTION)
 
 
 def _resolve_open_shared(task):
     """Run `_resolve_open` on the shared arguments, in a worker process."""
-    det_arr, _, _, detection_function = _SHARED_DETECTION
-
-    return _resolve_open(det_arr, task[0], task[1], detection_function)
+    return _resolve_open(_SHARED_DETECTION['det_arr'], task[0], task[1], _SHARED_DETECTION['detection_function'])
 
 
-def _map_tasks(function, shared_function, tasks, n_workers, backend, progress):
+def _iter_tasks(function, shared_function, tasks, n_workers, backend, progress):
     """
-    Apply a function to a list of tasks, serially or in parallel.
+    Apply a function to a list of tasks and yield the results in order.
+
+    The results are produced one at a time, so that each can be used
+    and released before the next one is taken. In parallel at most
+    `2 * n_workers` tasks are running or waiting to be taken.
 
     Parameters
     ----------
@@ -934,25 +1101,60 @@ def _map_tasks(function, shared_function, tasks, n_workers, backend, progress):
     progress : bool
         If `True` a progress bar is shown.
 
-    Returns
-    -------
-    list
-        The results, in the order of the tasks.
+    Yields
+    ------
+    object
+        The result of every task, in the order of the tasks.
     """
+    bar = tqdm(total=len(tasks), disable=not progress)
+
     if n_workers <= 1 or len(tasks) <= 1:
-        return [function(task) for task in tqdm(tasks, disable=not progress)]
+        for task in tasks:
+            yield function(task)
+            bar.update()
 
-    if backend == 'processes':
-        # Tasks are handed out one at a time: their cost is uneven.
-        with multiprocessing.get_context('fork').Pool(n_workers) as pool:
-            return list(tqdm(pool.imap(shared_function, tasks), total=len(tasks), disable=not progress))
+    else:
+        if backend == 'processes':
+            pool = multiprocessing.get_context('fork').Pool(n_workers)
+            submit = partial(pool.apply_async, shared_function)
+            result_of = lambda future: future.get()
+        else:
+            pool = ThreadPoolExecutor(max_workers=n_workers)
+            submit = partial(pool.submit, function)
+            result_of = lambda future: future.result()
 
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        return list(tqdm(pool.map(function, tasks), total=len(tasks), disable=not progress))
+        try:
+            pending = deque()
+            tasks = iter(tasks)
+
+            while True:
+                # Keep a bounded number of tasks in flight, so that
+                # finished results do not pile up in memory.
+                while len(pending) < 2 * n_workers:
+                    try:
+                        task = next(tasks)
+                    except StopIteration:
+                        break
+
+                    pending.append(submit((task,)) if backend == 'processes' else submit(task))
+
+                if not pending:
+                    break
+
+                yield result_of(pending.popleft())
+                bar.update()
+
+        finally:
+            if backend == 'processes':
+                pool.terminate()
+            else:
+                pool.shutdown(wait=True)
+
+    bar.close()
 
 
 def detect_in_cells(
-        det_arr: npt.ArrayLike,
+        det_arr,
         tiling: HealpixTiling,
         band: str,
         detection_function: Callable,
@@ -961,6 +1163,8 @@ def detect_in_cells(
         progress: bool = True,
         threshold: Optional[float] = None,
         backend: str = 'threads',
+        measure: Optional[Callable] = None,
+        sink: Optional[Callable] = None,
     ) -> Sources:
     """
     Detect the sources of a field cell by cell, without stitching.
@@ -979,11 +1183,11 @@ def detect_in_cells(
        assigned to the cell of its peak.
 
     The box of step 2 is found in one step if `threshold` is given:
-    the regions above the threshold are labelled once on a
-    block-reduced copy of the array (`_coarse_components`), and all
-    the cut segments of a coarse region are detected together on the
-    box of that region. Without `threshold`, or if a segment is still
-    cut, the box is doubled until the segment fits.
+    a coarse map of the pixels above the threshold, 64 times smaller
+    than the image, is assembled from the cutouts of the cells, and
+    all the cut segments of a region of that map are detected
+    together on the box of the region. Without `threshold`, or if a
+    segment is still cut, the box is doubled until the segment fits.
 
     The result does not depend on the order or on the margin of the
     tiling, nor on the number of workers, and equals the segmentation
@@ -991,13 +1195,21 @@ def detect_in_cells(
     gives a complete segment the same footprint whatever the cutout
     it is seen in.
 
-    The sources are labelled from 1, sorted by cell and, within a
-    cell, by the position of their peak. The cell of every source is
-    stored in its attribute `cell_id`, and the peak in `peak`.
+    Memory. Only the cutouts being segmented are in memory, one per
+    worker, if `det_arr` is a `LazyDetectionArray`. If `sink` is
+    given the sources are also handed over cell by cell and not
+    kept, so that the memory in use does not grow with the size of
+    the field.
+
+    The sources are labelled from 1: first those of the cells, in the
+    order of the cells and, within a cell, of the position of their
+    peak; then those that were cut by a cutout, sorted by cell and
+    peak. The cell of every source is stored in its attribute
+    `cell_id`, and the peak in `peak`.
 
     Parameters
     ----------
-    det_arr
+    det_arr : numpy.ndarray or LazyDetectionArray
         The full detection array, shape `(n_y, n_x)`.
     tiling
         The tiling, with the tiles already made.
@@ -1021,18 +1233,29 @@ def detect_in_cells(
     backend
         `'threads'` runs the workers as threads of this process;
         `'processes'` runs them as forked processes, which do not
-        share the Python interpreter lock and scale better on large
-        fields, at the cost of sending the footprints back to this
-        process. Where forking is not available threads are used.
+        share the Python interpreter lock, at the cost of sending
+        the sources back to this process. Where forking is not
+        available threads are used.
+    measure
+        A function applied by the workers to the sources of a cell,
+        a `Sources` container with provisional labels. Its result is
+        passed to `sink`.
+    sink
+        A function `sink(sources, measured)` called in this process
+        with the sources of one cell at a time, with their final
+        labels, and the result of `measure`. If given, the sources
+        are not kept and an empty container is returned.
 
     Returns
     -------
     Sources
-        The detected sources.
+        The detected sources, or an empty container if `sink` is
+        given.
     """
     global _SHARED_DETECTION
 
-    det_arr = np.asarray(det_arr)
+    if not isinstance(det_arr, LazyDetectionArray):
+        det_arr = np.asarray(det_arr)
 
     if backend not in ('threads', 'processes'):
         raise ValueError("backend must be either 'threads' or 'processes'")
@@ -1040,40 +1263,69 @@ def detect_in_cells(
     if backend == 'processes' and 'fork' not in multiprocessing.get_all_start_methods():
         backend = 'threads'
 
+    if header is None:
+        header = tiling.header_dict[band]
+
+    shared = dict(det_arr=det_arr, tiling=tiling, band=band, detection_function=detection_function,
+                  threshold=threshold, header=header, measure=measure)
+
     def run(index):
-        return _detect_cell(det_arr, tiling, index, band, detection_function)
+        return _detect_cell(index=index, **shared)
 
     def resolve(task):
         return _resolve_open(det_arr, task[0], task[1], detection_function)
 
-    _SHARED_DETECTION = (det_arr, tiling, band, detection_function)
+    kept = []
+    peaks_found = set()
+    next_label = 1
+
+    def deliver(sources, measured):
+        """Give the final labels to the sources and pass them on."""
+        nonlocal next_label
+
+        for source in sources:
+            source.label = next_label
+            next_label += 1
+
+            peaks_found.add(source.peak)
+
+        if sink is not None:
+            sink(sources, measured)
+        else:
+            kept.extend(sources.sources)
+
+    n_y, n_x = det_arr.shape
+    coarse = np.zeros((-(-n_y // _BLOCK), -(-n_x // _BLOCK)), dtype=bool) if threshold is not None else None
+
+    seeds = []
+
+    _SHARED_DETECTION = shared
 
     try:
-        results = _map_tasks(run, _detect_cell_shared, list(range(len(tiling.cell_ids))), n_workers, backend, progress)
+        results = _iter_tasks(run, _detect_cell_shared, list(range(len(tiling.cell_ids))), n_workers, backend, progress)
 
-        # Complete segments, keyed by their peak: a source has one
-        # peak, so the key also removes the duplicates.
-        found = {}
+        for sources, measured, cell_seeds, piece in results:
+            seeds += cell_seeds
 
-        for index, (owned, _) in enumerate(results):
-            for candidate in owned:
-                candidate['cell_id'] = int(tiling.cell_ids[index])
-                found[candidate['peak']] = candidate
+            if piece is not None:
+                by0, bx0, blocks = piece
+                coarse[by0:by0 + blocks.shape[0], bx0:bx0 + blocks.shape[1]] |= blocks
+
+            if len(sources) > 0:
+                deliver(sources, measured)
 
         # Segments cut by a cutout: group them, so that each group is
         # detected again once.
-        seeds = [(seed, box) for _, cell_seeds in results for seed, box in cell_seeds]
-
         tasks = []
 
         if seeds and threshold is not None:
-            block = 8
-            coarse, coarse_boxes = _coarse_components(det_arr, threshold, block)
+            coarse_labels, _ = ndimage.label(coarse, structure=np.ones((3, 3)))
+            coarse_boxes = ndimage.find_objects(coarse_labels)
 
             groups = {}
 
             for seed, box in seeds:
-                groups.setdefault(int(coarse[seed[0] // block, seed[1] // block]), []).append((seed, box))
+                groups.setdefault(int(coarse_labels[seed[0] // _BLOCK, seed[1] // _BLOCK]), []).append((seed, box))
 
             for label, members in groups.items():
                 if label == 0:
@@ -1086,60 +1338,48 @@ def detect_in_cells(
 
                 # One more block on each side: the closing of the
                 # segments and the border test need a free border.
-                box = ((sl_y.start - 1) * block, (sl_y.stop + 1) * block,
-                       (sl_x.start - 1) * block, (sl_x.stop + 1) * block)
+                box = ((sl_y.start - 1) * _BLOCK, (sl_y.stop + 1) * _BLOCK,
+                       (sl_x.start - 1) * _BLOCK, (sl_x.stop + 1) * _BLOCK)
 
                 tasks.append(([seed for seed, _ in members], box))
 
         else:
             tasks = [([seed], box) for seed, box in seeds]
 
-        # Largest boxes first, so that they do not end up queued
-        # behind each other on the same worker.
-        tasks.sort(key=lambda task: -(task[1][1] - task[1][0]) * (task[1][3] - task[1][2]))
+        # Smallest boxes first: their order fixes the labels, and the
+        # large ones then run with fewer of the others in memory.
+        tasks.sort(key=lambda task: ((task[1][1] - task[1][0]) * (task[1][3] - task[1][2]), task[1]))
 
-        resolved = _map_tasks(resolve, _resolve_open_shared, tasks, n_workers, backend, False)
+        valid_cells = set(int(cell) for cell in tiling.cell_ids)
+
+        late = {}
+
+        for group in _iter_tasks(resolve, _resolve_open_shared, tasks, n_workers, backend, False):
+            candidates = [candidate for candidate in group
+                          if candidate['peak'] not in peaks_found and candidate['peak'] not in late]
+
+            if not candidates:
+                continue
+
+            peaks = np.array([candidate['peak'] for candidate in candidates])
+            cells = tiling.cells_of_pixels(peaks[:, 1], peaks[:, 0], band)
+
+            for candidate, cell in zip(candidates, cells):
+                # A source whose peak is in a cell that is not part
+                # of the tiling is dropped, as the complete ones are.
+                if int(cell) in valid_cells:
+                    candidate['cell_id'] = int(cell)
+                    late[candidate['peak']] = candidate
 
     finally:
         _SHARED_DETECTION = None
 
-    valid_cells = set(int(cell) for cell in tiling.cell_ids)
+    # The sources that were cut, one at a time: they can be large.
+    for candidate in sorted(late.values(), key=lambda candidate: (candidate['cell_id'], candidate['peak'])):
+        sources = _to_sources([candidate], header)
 
-    candidates = [candidate for group in resolved for candidate in group if candidate['peak'] not in found]
+        measured = measure(sources) if measure is not None else None
 
-    if candidates:
-        peaks = np.array([candidate['peak'] for candidate in candidates])
-        cells = tiling.cells_of_pixels(peaks[:, 1], peaks[:, 0], band)
+        deliver(sources, measured)
 
-        for candidate, cell in zip(candidates, cells):
-            # A source whose peak is in a cell that is not part of the
-            # tiling is dropped, as the complete ones are.
-            if int(cell) in valid_cells:
-                candidate['cell_id'] = int(cell)
-                found.setdefault(candidate['peak'], candidate)
-
-    ordered = sorted(found.values(), key=lambda candidate: (candidate['cell_id'], candidate['peak']))
-
-    sources_list = []
-
-    for label, candidate in enumerate(ordered, start=1):
-        iy0, iy1, ix0, ix1 = candidate['bbox']
-
-        source = Source(
-            segment=candidate['segment'],
-            det_arr=candidate['det_arr'],
-            label=label,
-            area=candidate['area'],
-            bbox=BoundingBox(ixmin=ix0, ixmax=ix1, iymin=iy0, iymax=iy1),
-            previous_label=0,
-        )
-
-        source.cell_id = candidate['cell_id']
-        source.peak = candidate['peak']
-
-        sources_list.append(source)
-
-    if header is None:
-        header = tiling.header_dict[band]
-
-    return Sources(sources_list, header)
+    return Sources(kept, header)

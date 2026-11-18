@@ -29,16 +29,19 @@ from attila.field.field import Field
 from astropy import units as u
 
 import numpy as np
+import pandas as pd
+
+from astropy.wcs import WCS
 
 from astropy.convolution import Gaussian2DKernel, convolve_fft
 from functools import partial
 
 from attila.tiling.tilingrid import Tiling, _combine_labels
-from attila.tiling.healpix import HealpixTiling, detect_in_cells
+from attila.tiling.healpix import HealpixTiling, LazyDetectionArray, detect_in_cells
 from attila.utils.image_utils import gaussian_smooth
 from attila.tiling.tiles import ConvolutionTile, BaseTile, DetectionTile
 from attila.detection.detection import segment
-from attila.tiling.sources import Sources
+from attila.tiling.sources import Sources, _same_grid
 from attila.properties.extinction import Extinction
 from attila.properties.properties import Properties
 
@@ -156,135 +159,152 @@ def _snr_smoothed(data_g, data_r, noise_g, noise_r, sigma):
     return gaussian_smooth(snr, sigma)
 
 
-def _combine_healpix(field: Field, tiling: HealpixTiling, sigma: float = 2.0, n_workers: int = 4):
+def _combine_healpix(field: Field, tiling: HealpixTiling, sigma: float = 2.0, n_workers: int = 4, lazy: bool = True):
     """
-    Build the detection array on a HEALPix tiling.
+    Define the detection array of a field tiled with HEALPix cells.
 
-    It is the counterpart of `combine` for a `HealpixTiling`. For
-    every cell, the g and r images and noise maps are cut out with a
-    margin as wide as the smoothing kernel, the signal-to-noise image
-    is computed and smoothed, and the part that covers the cell is
-    written into the full-size detection array. Thanks to the margin
-    the values do not depend on the cell they are computed in, so
-    nothing has to be combined where the cutouts overlap, and the
-    cells can be processed in parallel.
+    The detection array is the signal-to-noise ratio of the g and r
+    bands, `(g + r) / sqrt(noise_g^2 + noise_r^2)`, smoothed with a
+    Gaussian kernel (`gaussian_smooth`).
+
+    By default the array is not computed here: a
+    `LazyDetectionArray` is returned, which computes the piece that
+    is requested, reading only that part of the images. The
+    detection then holds in memory one cutout per worker instead of
+    the whole field. A piece is computed on a box enlarged by the
+    half-size of the kernel, so its values are those of the array
+    smoothed in one piece.
 
     Parameters
     ----------
     field
-        The field with the bands `'g'` and `'r'`.
+        The field with the images of the g and r bands.
     tiling
-        The tiling of the field.
+        The HEALPix tiling, with the tiles already made.
     sigma
         The standard deviation of the Gaussian kernel in pixels.
     n_workers
-        The number of threads that process the cells.
+        The number of threads, used only if `lazy` is `False`.
+    lazy
+        If `False` the full array is computed now and kept in
+        memory, which is faster for a field that fits in it.
 
     Returns
     -------
     output_detarray_dict : dict
-        `{'gr': {'detection_array': numpy.ndarray}}`, 32-bit floats.
+        `{'gr': {'detection_array': array}}`, with the lazy or the
+        full detection array.
     field : Field
         The input field, unchanged.
     tiling : HealpixTiling
-        A new tiling that also includes the band `'gr'`.
+        The tiling, with the band `'gr'` added.
     """
-    output_detarray_dict = {
-        'gr': {
-            'detection_array': np.zeros(field.multibandimages['g'].shape, dtype=np.float32),
-        }
-    }
-
     tiling = tiling.add_band('gr', field.multibandimages.property_dict('header')['g'])
 
-    input_dict = field.multibandimages.property_dict(['data', 'noise'])
-    input_dict = {band: input_dict[band] for band in ('g', 'r')}
+    image_g, image_r = field.multibandimages['g'], field.multibandimages['r']
+
+    def piece(box):
+        """Compute the detection array on a box of the image."""
+        window = (slice(box[0], box[1]), slice(box[2], box[3]))
+
+        return _snr_smoothed(
+            np.asarray(image_g.data[window], dtype=np.float32),
+            np.asarray(image_r.data[window], dtype=np.float32),
+            np.asarray(image_g.noise[window], dtype=np.float32),
+            np.asarray(image_r.noise[window], dtype=np.float32),
+            sigma
+        ).astype(np.float32, copy=False)
 
     # Half-size of the kernel: the margin that makes the smoothed
-    # values independent of the cutout.
-    margin = int(np.ceil(4 * sigma)) + 1
+    # values independent of the box.
+    detection_array = LazyDetectionArray(
+        shape = image_g.data.shape,
+        function = piece,
+        margin = int(np.ceil(4 * sigma)) + 1
+    )
 
-    def run(i):
-        combine_tile = tiling.get_tile_data(
-            index = i,
-            Tile = BaseTile,
-            input_dict = input_dict,
-            margin_pixels = margin
-        )
+    if not lazy:
+        full = np.zeros(detection_array.shape, dtype=np.float32)
 
-        convolve_tile = ConvolutionTile(
-            shape=combine_tile.shape,
-            overlap=combine_tile.overlap,
-            bands=['gr'],
-            index=i
-        )
+        def run(i):
+            y0, y1, x0, x1 = tiling.cell_box(i, 'gr', 0)[0]
+            full[y0:y1, x0:x1] = detection_array[y0:y1, x0:x1]
 
-        convolve_tile.inner_box = {'gr': combine_tile.inner_box['g']}
-        convolve_tile.outer_box = {'gr': combine_tile.outer_box['g']}
+        with ThreadPool(n_workers) as pool:
+            list(tqdm(pool.imap(run, range(len(tiling.cell_ids))), total=len(tiling.cell_ids)))
 
-        convolve_tile.add_data(
-            band = 'gr',
-            key = 'detection_array',
-            arr = _snr_smoothed(
-                combine_tile.data2D['g']['data'],
-                combine_tile.data2D['r']['data'],
-                combine_tile.data2D['g']['noise'],
-                combine_tile.data2D['r']['noise'],
-                sigma
-            ),
-            reg = combine_tile.reg['g']['data']
-        )
-
-        tiling.tile_to_mosaic(
-            tile = convolve_tile,
-            band = 'gr',
-            output_dict = output_detarray_dict
-        )
-
-    with ThreadPool(n_workers) as pool:
-        list(tqdm(pool.imap(run, range(len(tiling.cell_ids))), total=len(tiling.cell_ids)))
+        detection_array = full
 
     attila_logger.logger.info("Convolution and combination done.")
 
-    return output_detarray_dict, field, tiling
+    return {'gr': {'detection_array': detection_array}}, field, tiling
 
 
-def _detect_healpix(output_detarray_dict: Dict, field: Field, tiling: HealpixTiling, threshold, nconn, n_workers: int = 4):
+def _detect_healpix(
+        output_detarray_dict: Dict,
+        field: Field,
+        tiling: HealpixTiling,
+        threshold,
+        nconn,
+        n_workers: int = 4,
+        backend: str = 'processes',
+        keep_sources: bool = True,
+    ):
     """
-    Detect and measure the sources on a HEALPix tiling.
+    Detect, measure and save the sources of a HEALPix tiling.
 
-    It is the counterpart of `detect` for a `HealpixTiling`. The
-    cells are segmented independently with
-    `attila.tiling.healpix.detect_in_cells`: every source belongs to
-    the cell that contains its peak, and a source cut by the border
-    of a cutout is detected again on a larger one, so no mosaic of
-    labels is built and nothing is relabelled. Segments that touch
-    after the closing are merged (`segment(merge_touching=True)`), as
-    on a rectangular tiling. The extinction grid is
-    made of the HEALPix cells of order 10 (3.4 arcmin), or of the
-    cells of the tiling if they are smaller. The HEALPix cell of every
-    source is written in the column `healpix_cell` of the properties.
+    The cells are processed independently (`detect_in_cells`). For
+    every cell, the worker
+
+    1. takes the cutout of the detection array, computing it at this
+       point if the array is lazy, and segments it;
+    2. keeps the sources whose peak lies in the cell;
+    3. assigns them the extinction of the grid, cuts their images
+       and measures them (`Properties`);
+    4. releases the cutout.
+
+    The sources of the cell and their table are then saved in
+    `./output/detection/<threshold>_<nconn>/` before the next cell
+    is taken. The sources cut by a cutout are detected again on a
+    box that contains them and handled in the same way, one at a
+    time. The data in memory are therefore one cutout per worker,
+    whatever the size of the field.
+
+    The extinction is evaluated on HEALPix cells of order 10
+    (3.4 arcmin) or of the order of the tiling if it is finer. The
+    table has the two extra columns `healpix_order` and
+    `healpix_cell`.
 
     Parameters
     ----------
     output_detarray_dict
-        The detection array, as returned by `combine`.
+        The detection array, as returned by `_combine_healpix`.
     field
-        The field with the images of the bands, in counts.
+        The field with the images of the bands.
     tiling
-        The tiling returned by `combine`, which includes the band
-        `'gr'`.
-    threshold : float
-        The detection threshold in units of sigma.
-    nconn : int
+        The tiling returned by `_combine_healpix`.
+    threshold
+        The detection threshold, in units of sigma.
+    nconn
         The minimum number of connected pixels of a source.
     n_workers
-        The number of threads that process the cells.
+        The number of workers.
+    backend
+        `'processes'` or `'threads'`, see `detect_in_cells`. The
+        measurements only run in parallel with processes.
+    keep_sources
+        If `True` the sources are also kept and returned, with their
+        segments and the cutouts of the detection array; their
+        images are views of the images of the field. If `False`
+        nothing is kept and the returned container only has the
+        table: the sources are read back from the output folder
+        with `Sources.load_light`.
 
     Returns
     -------
     tuple
-        The same six values as `detect`.
+        `(sources, ext, field, tiling, threshold, nconn)`, as
+        `detect`.
     """
     # Touching segments are merged, as the relabelling of the mosaic
     # does on a rectangular tiling.
@@ -296,31 +316,95 @@ def _detect_healpix(output_detarray_dict: Dict, field: Field, tiling: HealpixTil
         merge_touching = True
         )
 
+    extinction_tiling = HealpixTiling(
+        header_dict = tiling.header_dict,
+        order = max(tiling.order, 10)
+    )
+    extinction_tiling.make_tiles()
+
+    attila_logger.logger.info("Compute the extinction on the grid...")
+
+    ext = Extinction(
+        field = field,
+        extinction_map_name = 'sfd',
+        bands=['SLOAN_SDSS.g', 'SLOAN_SDSS.r'],
+        )
+
+    ext.compute_extinction_from_tiling(coord_list=extinction_tiling.centres,
+                                    regions=extinction_tiling.polygons)
+
+    images = field.multibandimages
+    header = tiling.header_dict['gr']
+
+    same_grid = _same_grid(images, header, WCS(header))
+
+    def measure(sources):
+        """Measure the sources of one cell; runs in the workers."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            for source in sources:
+                source.get_data(images, sources.wcs, same_grid=same_grid)
+
+            props = Properties(sources, field)
+            props.A = ext.apply_grid_to_sources(sources)
+
+            table = props._table()
+
+        table['healpix_order'] = tiling.order
+        table['healpix_cell'] = [source.cell_id for source in sources]
+
+        # The images are cut again where they are needed.
+        for source in sources:
+            del source.data
+
+        return table
+
+    output = f'./output/detection/{threshold}_{nconn}'
+    os.makedirs(path.join(output, 'sources'), exist_ok=True)
+
+    tables, kept = [], []
+
+    def sink(sources, table):
+        """Save the sources of one cell; runs in this process."""
+        table['label'] = [source.label for source in sources]
+        tables.append(table)
+
+        for source in sources:
+            source.save_light(path.join(output, 'sources', f'source_{source.previous_label}_{source.label}'))
+
+        if keep_sources:
+            kept.extend(sources.sources)
+
+    attila_logger.logger.info("Detect, measure and save the sources cell by cell...")
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-
-        sources = detect_in_cells(
+        detect_in_cells(
             det_arr = output_detarray_dict['gr']['detection_array'],
             tiling = tiling,
             band = 'gr',
             detection_function = detection_function,
             n_workers = n_workers,
-            threshold = threshold
+            threshold = threshold,
+            backend = backend,
+            measure = measure,
+            sink = sink
         )
 
-    extinction_tiling = HealpixTiling(
-        header_dict = tiling.header_dict,
-        order = max(tiling.order, 10)
-    )
+    sources = Sources(kept, header)
 
-    extinction_tiling.make_tiles()
+    if keep_sources:
+        for source in sources:
+            source.get_data(images, sources.wcs, same_grid=same_grid)
 
-    sources, ext = _measure_and_save(sources, field, extinction_tiling, threshold, nconn)
+    if tables:
+        sources.properties = pd.concat(tables, ignore_index=True)
+        sources.properties.to_csv(path.join(output, 'properties.csv'))
 
-    sources.properties['healpix_order'] = tiling.order
-    sources.properties['healpix_cell'] = [source.cell_id for source in sources]
+    header.tofile(path.join(output, 'header.hdr'), overwrite=True)
 
-    sources.properties.to_csv(path.join(f'./output/detection/{threshold}_{nconn}', 'properties.csv'))
+    attila_logger.logger.info("All done!")
 
     return sources, ext, field, tiling, threshold, nconn
 
