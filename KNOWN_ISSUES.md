@@ -83,9 +83,9 @@ with a small test; everything else comes from static reading.
 
 Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
 
-- `detect` + properties: about half of the time goes into building a
-  `WCS` per source cutout (`Image.cutout`), and 10 s into
-  `np.vectorize(_combine_labels)`.
+- `detect` + properties on a rectangular tiling: 10 s go into
+  `np.vectorize(_combine_labels)`. The per-source WCS constructions
+  that took about half of the time were removed in 0.2.0.
 - `combine`: the FFT convolution per tile and reading the images from
   the SSD dominate.
 - Deblending: a handful of very large segments take almost all the
@@ -96,10 +96,9 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
 
 - The detection array is still one full-size array in memory, so the
   tiles do not yet make the pipeline out-of-core.
-- On a field that fits in memory the cells are slower than segmenting
-  the whole array at once (12 s against 4 s on the Hydra S mosaic):
-  one segment of 6.5 million pixels is detected again on a cutout
-  grown around it.
+- On the Hydra S mosaic the cells with 8 threads take as long as
+  segmenting the whole array at once (5 s); worker processes are not
+  faster than threads at this field size (6 s with 8 processes).
 - Compared with version 0.1.0 on the central 6000 x 6000 pixels of
   the Hydra S mosaic (threshold 3, 25 pixels, sigma 3): 3210 of the
   3212 sources of 0.1.0 are recovered, 98.3% with an identical

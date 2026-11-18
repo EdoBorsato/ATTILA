@@ -139,6 +139,46 @@ def _get_bbox_image(image, bbox, wcs):
 
     return image.cutout(position=position, size=(size_y * u.arcsec, size_x * u.arcsec))
 
+def _same_grid(input, header, wcs):
+    """
+    Tell whether an image has the pixel grid of a mosaic.
+
+    Parameters
+    ----------
+    input : object
+        The input of `get_data`. Anything that is not an `Image` or a
+        `MultibandImage` gives `False`.
+    header : astropy.io.fits.Header or None
+        The header of the mosaic.
+    wcs : astropy.wcs.WCS
+        The WCS of the mosaic.
+
+    Returns
+    -------
+    bool
+        `True` if every band has the shape given by the header and a
+        WCS equal to `wcs`.
+    """
+    if isinstance(input, Image):
+        images = [input]
+    elif isinstance(input, MultibandImage):
+        images = list(input)
+    else:
+        return False
+
+    if header is None or 'NAXIS1' not in header:
+        return False
+
+    shape = (int(header['NAXIS2']), int(header['NAXIS1']))
+
+    try:
+        return all(
+            image.data.shape == shape and image.wcs.wcs.compare(wcs.wcs, tolerance=1e-10)
+            for image in images
+        )
+    except Exception:
+        return False
+
 def _get_bbox_arr(arr, bbox):
         """
         Cut an array on a bounding box along its last two axes.
@@ -248,14 +288,15 @@ class Source:
         """
         return (self.bbox.ixmin + self.bbox.ixmax) / 2, (self.bbox.iymin + self.bbox.iymax) / 2
 
-    def get_data(self, input: Union[ArrayLike, Image, MultibandImage], wcs=None) -> None:
+    def get_data(self, input: Union[ArrayLike, Image, MultibandImage], wcs=None, same_grid=False) -> None:
         """
         Extract the data of the source from a full-mosaic input.
 
         A numpy array is sliced on the bounding box (last two axes) and
         `"array"` is recorded in `data_types`. An `Image` or a
         `MultibandImage` is cut around the centre of the box through its
-        `cutout` method and `"image"` is recorded. The result is stored
+        `cutout` method, or sliced on the box with `cutout_pixels` if
+        `same_grid` is `True`, and `"image"` is recorded. The result is stored
         in the attribute `data`, replacing any previous value. Inputs of
         other types are ignored. Warnings raised during the extraction
         are silenced.
@@ -266,7 +307,11 @@ class Source:
             The full-mosaic array or image.
         wcs : astropy.wcs.WCS, optional
             The WCS of the mosaic, needed for `Image` and
-            `MultibandImage` inputs.
+            `MultibandImage` inputs unless `same_grid` is `True`.
+        same_grid : bool
+            `True` if the input image has the pixel grid the bounding
+            box refers to. The box is then sliced directly, which is
+            much faster and gives the same pixels.
         """
 
         with warnings.catch_warnings():
@@ -279,7 +324,10 @@ class Source:
                     self.data_types.append("array")            
 
             elif (isinstance(input, Image)) | (isinstance(input, MultibandImage)):
-                self.data = _get_bbox_image(input, self.bbox, wcs=wcs)
+                if same_grid:
+                    self.data = input.cutout_pixels(self.bbox.iymin, self.bbox.iymax, self.bbox.ixmin, self.bbox.ixmax)
+                else:
+                    self.data = _get_bbox_image(input, self.bbox, wcs=wcs)
 
                 if "image" not in self.data_types:
                     self.data_types.append("image")
@@ -857,15 +905,20 @@ class Sources:
         Extract the data of every source from a full-mosaic input.
 
         `Source.get_data` is called on every source with the WCS of the
-        collection, showing a progress bar.
+        collection, showing a progress bar. If the input is an image
+        with the same pixel grid as the collection (same shape and
+        same WCS in every band), the bounding boxes are sliced
+        directly instead of being converted to sky coordinates.
 
         Parameters
         ----------
         input
             The full-mosaic array or image.
         """
+        same_grid = _same_grid(input, self.header, self.wcs)
+
         for source in tqdm(self.sources):
-            source.get_data(input, self.wcs)
+            source.get_data(input, self.wcs, same_grid=same_grid)
 
 
     @classmethod

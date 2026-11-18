@@ -21,11 +21,15 @@ field.
 
 from attila.tiling.sources import Sources
 from attila.field.field import Field
+import multiprocessing
+import warnings
+
+from copy import copy
+
 import numpy as np
 import pandas as pd
 from photutils.centroids import centroid_quadratic
 
-from astropy.wcs import WCS
 
 import astropy.units as u
 
@@ -140,6 +144,31 @@ def _area_pixel(area_pixel):
 def _label(sources: Sources):
     """Return the list of the labels of the sources."""
     return [source.label for source in sources]
+
+# The object measured by the worker processes of
+# `Properties.detection_properties`, which inherit it when forked.
+_SHARED_PROPERTIES = None
+
+
+def _stack_table(bounds):
+    """
+    Measure one stack of sources in a worker process.
+
+    Parameters
+    ----------
+    bounds : tuple of int
+        The first source of the stack and the one after the last.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The table of the stack.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        return _SHARED_PROPERTIES._stack(*bounds)._table()
+
 
 class Properties:
     """
@@ -491,8 +520,13 @@ class Properties:
                 centroids_quad[i, j, 2] = centroids_quad[i, j, 0] + bbox.ixmin
                 centroids_quad[i, j, 3] = centroids_quad[i, j, 1] + bbox.iymin
 
-                centroids_quad[i, j, 4] = WCS(self.sources.header).all_pix2world(centroids_quad[i, j, 2], centroids_quad[i, j, 3], 0)[0]
-                centroids_quad[i, j, 5] = WCS(self.sources.header).all_pix2world(centroids_quad[i, j, 2], centroids_quad[i, j, 3], 0)[1]
+
+        # Sky coordinates of all the centroids, in one call.
+        if len(self.sources) > 0:
+            ra, dec = self.sources.wcs.all_pix2world(centroids_quad[:, :, 2].ravel(), centroids_quad[:, :, 3].ravel(), 0)
+
+            centroids_quad[:, :, 4] = np.reshape(ra, centroids_quad.shape[:2])
+            centroids_quad[:, :, 5] = np.reshape(dec, centroids_quad.shape[:2])
 
         return centroids_quad
 
@@ -742,7 +776,61 @@ class Properties:
 
         return std
 
-    def detection_properties(self):
+    def _table(self):
+        """
+        Run all the measurements and return them as a table.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per source, with the columns described in
+            `detection_properties`.
+        """
+        df = pd.DataFrame()
+
+        for func in self.functions:
+
+            results = np.asarray(func())
+
+            if len(results.shape) == 1:
+                df[func.__name__] = results
+            else:
+                # Transpose to iterate over the bands, not the sources.
+                for band, result in zip(self.bands, results.T):
+                    df[func.__name__ + '_' + band] = result
+
+        return df
+
+    def _stack(self, start, stop):
+        """
+        Return a copy of this object restricted to a stack of sources.
+
+        Parameters
+        ----------
+        start, stop : int
+            The stack holds the sources `start` to `stop - 1`.
+
+        Returns
+        -------
+        Properties
+            An object that measures only those sources, with the
+            corresponding rows of the extinction `A`.
+        """
+        stack = copy(self)
+
+        stack.sources = Sources(self.sources.sources[start:stop], self.sources.header)
+        stack.A = np.asarray(self.A)[start:stop]
+
+        # The measurement methods are bound to this object: bind the
+        # same ones to the stack.
+        stack.functions = [getattr(stack, func.__name__) for func in self.functions]
+
+        for cached in ('_centroids', '_rel_centroids'):
+            stack.__dict__.pop(cached, None)
+
+        return stack
+
+    def detection_properties(self, n_workers=1, stack_size=64):
         """
         Run all the measurements and attach the table to the sources.
 
@@ -757,6 +845,22 @@ class Properties:
         previous one; `Sources.save_light` writes it to
         `properties.csv`.
 
+        With `n_workers` larger than 1 the sources are split into
+        stacks of `stack_size` consecutive sources, which are measured
+        by a pool of worker processes; the stacks are handed out one
+        at a time, so a stack with a very large source does not hold
+        the others back. The table is the same as with one worker.
+        The worker processes are forked, so that they share the
+        images without copying them; where forking is not available
+        the measurements run in this process.
+
+        Parameters
+        ----------
+        n_workers : int
+            The number of worker processes.
+        stack_size : int
+            The number of sources in a stack.
+
         Returns
         -------
         Sources
@@ -765,17 +869,25 @@ class Properties:
             of the measurements.
         """
 
-        df = pd.DataFrame()
-        for func in self.functions:
+        n_sources = len(self.sources)
 
-            results = np.asarray(func())
+        if n_workers > 1 and n_sources > stack_size and 'fork' in multiprocessing.get_all_start_methods():
+            global _SHARED_PROPERTIES
 
-            if len(results.shape) == 1:
-                df[func.__name__] = results
-            else:
-                # Transpose to iterate over the bands, not the sources.
-                for band, result in zip(self.bands, results.T):
-                    df[func.__name__ + '_' + band] = result
+            bounds = [(start, min(start + stack_size, n_sources)) for start in range(0, n_sources, stack_size)]
+
+            _SHARED_PROPERTIES = self
+
+            try:
+                with multiprocessing.get_context('fork').Pool(n_workers) as pool:
+                    tables = list(pool.imap(_stack_table, bounds))
+            finally:
+                _SHARED_PROPERTIES = None
+
+            df = pd.concat(tables, ignore_index=True)
+
+        else:
+            df = self._table()
 
         self.sources.properties = df
         return self.sources

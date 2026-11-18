@@ -8,6 +8,15 @@
   `pipelines.detect` accept a `HealpixTiling`.
 - Added `segment(merge_touching=True)`, which merges the segments
   that touch after the closing, as the relabelling of the mosaic did.
+- Faster measurements: the image cutouts of the sources are sliced
+  directly when the images share the pixel grid of the catalogue
+  (`Image.cutout_pixels`, with the WCS built only on request), the
+  sky coordinates of the centroids are computed in one call, and
+  `Properties.detection_properties(n_workers=...)` measures stacks of
+  sources in parallel. The tables are unchanged.
+- `detect_in_cells`: sources cut by a cutout are grouped and detected
+  again in parallel on a box found in one step (`threshold`), and the
+  cells can run in worker processes (`backend='processes'`).
 - Added `gaussian_smooth`, a separable Gaussian smoothing that
   ignores invalid pixels.
 

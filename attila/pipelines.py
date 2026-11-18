@@ -120,7 +120,7 @@ def _measure_and_save(sources: Sources, field: Field, extinction_tiling, thresho
         props = Properties(sources, field)
 
         props.A = A_lambda
-        sources = props.detection_properties()
+        sources = props.detection_properties(n_workers=4)
 
     attila_logger.logger.info("All done! Outputting the detection results...")
 
@@ -304,7 +304,8 @@ def _detect_healpix(output_detarray_dict: Dict, field: Field, tiling: HealpixTil
             tiling = tiling,
             band = 'gr',
             detection_function = detection_function,
-            n_workers = n_workers
+            n_workers = n_workers,
+            threshold = threshold
         )
 
     extinction_tiling = HealpixTiling(
@@ -710,7 +711,7 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        deblended_sources = props.detection_properties()
+        deblended_sources = props.detection_properties(n_workers=4)
 
     attila_logger.logger.info("All done! Outputting the detection results...")
 

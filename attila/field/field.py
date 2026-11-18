@@ -226,7 +226,25 @@ class Image:
         self.noise = noise
         self.pixel_scale = pixel_scale
         self.wcs = wcs
-        self.header = header   
+        self.header = header
+
+    @property
+    def wcs(self) -> WCS:
+        """
+        The world coordinate system of the image.
+
+        For a cutout made with `cutout_pixels` the WCS is built from
+        that of the parent image the first time it is requested.
+        """
+        if self._wcs is None and getattr(self, '_parent_wcs', None) is not None:
+            self._wcs = self._parent_wcs[self._parent_slices]
+
+        return self._wcs
+
+    @wcs.setter
+    def wcs(self, wcs):
+        """Set the world coordinate system of the image."""
+        self._wcs = wcs
 
     @property
     def shape(self) -> Tuple[int, int]:
@@ -275,6 +293,42 @@ class Image:
             pixel_scale=compute_pixel_scale(WCS(self.header)), 
             wcs=data_cutout.wcs, 
             header=self.header)
+
+    def cutout_pixels(self, y0: int, y1: int, x0: int, x1: int) -> "Image":
+        """
+        Return the cutout of a pixel box, without any sky conversion.
+
+        The data and the noise are sliced on the box; the result
+        shares its memory with this image. The pixel scale is the one
+        of this image, and the WCS of the cutout is only built if it
+        is requested, so the method is much faster than `cutout` when
+        many small cutouts are needed.
+
+        Parameters
+        ----------
+        y0, y1, x0, x1
+            The limits of the box in pixels, with exclusive upper
+            limits. The box must lie inside the image.
+
+        Returns
+        -------
+        Image
+            The cutout, with the header of this image.
+        """
+        box = (slice(y0, y1), slice(x0, x1))
+
+        image = Image(
+            band=self.band,
+            data=self.data[box],
+            noise=self.noise[box],
+            pixel_scale=self.pixel_scale,
+            wcs=None,
+            header=self.header)
+
+        image._parent_wcs = self.wcs
+        image._parent_slices = box
+
+        return image
     
     def plot(self, ax, additional_plotting=None, **kwargs):
         """
@@ -379,6 +433,26 @@ class MultibandImage:
             position, 
             size
             ) for image in self.image_list])
+
+    def cutout_pixels(self, y0: int, y1: int, x0: int, x1: int) -> "MultibandImage":
+        """
+        Return the cutout of a pixel box in every band.
+
+        All the bands must share the same pixel grid. See
+        `Image.cutout_pixels`.
+
+        Parameters
+        ----------
+        y0, y1, x0, x1
+            The limits of the box in pixels, with exclusive upper
+            limits.
+
+        Returns
+        -------
+        MultibandImage
+            The cutouts of all the bands.
+        """
+        return MultibandImage([image.cutout_pixels(y0, y1, x0, x1) for image in self.image_list])
 
     def property_dict(self, key: Union[List, str]) -> Dict[str, np.ndarray]:
         """
