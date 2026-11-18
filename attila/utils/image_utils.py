@@ -13,7 +13,7 @@ import astropy.units as u
 
 from astropy.wcs import WCS
 
-from typing import Dict, Union
+from typing import Union
 
 def to_mag(array: npt.ArrayLike, zpt: float, pixel_scale: float) -> npt.ArrayLike:
     """
@@ -25,7 +25,7 @@ def to_mag(array: npt.ArrayLike, zpt: float, pixel_scale: float) -> npt.ArrayLik
 
     which, despite the name of the function, includes the pixel-area
     term and therefore yields a surface brightness and not a magnitude.
-    It is the same expression as `tansform_to_SB`. Non-positive values
+    It is the same expression as `transform_to_SB`. Non-positive values
     give `nan` or `inf`.
 
     Parameters
@@ -46,17 +46,13 @@ def to_mag(array: npt.ArrayLike, zpt: float, pixel_scale: float) -> npt.ArrayLik
 
     return -2.5*np.log10(array) + zpt + 5*np.log10(pixel_scale)
 
-def compute_pixel_scale(wcs: WCS) -> float:
+def compute_pixel_scale(wcs: WCS) -> u.Quantity:
     """
     Return the pixel scale of an image from its WCS.
 
     The scales of the two image axes are read from
-    `wcs.proj_plane_pixel_scales()`. In the `numpy.array` call the
-    scale of the second axis is passed in the position of the `dtype`
-    argument, so the array holds the scale of the first axis only and
-    the mean reduces to that single value. The result is the pixel
-    scale along the first WCS axis; the two are equal for square
-    pixels.
+    `wcs.proj_plane_pixel_scales()` and averaged; the two are equal
+    for square pixels.
 
     The WCS is assumed to have celestial axes in degrees.
 
@@ -68,15 +64,13 @@ def compute_pixel_scale(wcs: WCS) -> float:
     Returns
     -------
     astropy.units.Quantity
-        The pixel scale in arcsec / pixel. Note that this is a
-        `Quantity` and not a plain `float` as the return annotation
-        says.
+        The pixel scale in arcsec / pixel.
     """
 
-    return ((np.array(wcs.proj_plane_pixel_scales()[0].to_value(),
-                    wcs.proj_plane_pixel_scales()[1].to_value()).mean()*u.deg).to(u.arcsec))/u.pixel
+    return ((np.array([wcs.proj_plane_pixel_scales()[0].to_value(),
+                    wcs.proj_plane_pixel_scales()[1].to_value()]).mean()*u.deg).to(u.arcsec))/u.pixel
 
-def tansform_to_SB(data: Union[float, npt.ArrayLike], zpt: float, pixel_scale:float):
+def transform_to_SB(data: Union[float, npt.ArrayLike], zpt: float, pixel_scale:float):
     """
     Convert counts per pixel to a surface brightness.
 
@@ -85,7 +79,7 @@ def tansform_to_SB(data: Union[float, npt.ArrayLike], zpt: float, pixel_scale:fl
         mu = -2.5 log10(data) + zpt + 5 log10(pixel_scale)
 
     with no correction for extinction or cosmological dimming. It is
-    the inverse of `tansform_from_SB`.
+    the inverse of `transform_from_SB`.
 
     Parameters
     ----------
@@ -104,11 +98,11 @@ def tansform_to_SB(data: Union[float, npt.ArrayLike], zpt: float, pixel_scale:fl
 
     return -2.5*np.log10(data) + zpt + 5*np.log10(pixel_scale)
 
-def tansform_from_SB(data: Union[float, npt.ArrayLike], zpt: float, pixel_scale:float):
+def transform_from_SB(data: Union[float, npt.ArrayLike], zpt: float, pixel_scale:float):
     """
     Convert a surface brightness to counts per pixel.
 
-    The conversion is the inverse of `tansform_to_SB`:
+    The conversion is the inverse of `transform_to_SB`:
 
         counts = 10 ** ((data - 5 log10(pixel_scale) - zpt) / -2.5)
 

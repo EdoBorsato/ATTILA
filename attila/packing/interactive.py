@@ -15,27 +15,19 @@ surface-brightness level to counts per pixel and draw the image.
 import matplotlib.pyplot as plt
 import numpy as np
 
-from astropy.io import fits
-
 from shapely.geometry import Point
 from matplotlib import colormaps as mcmaps
 from matplotlib import colors as mcolors
 
 from attila.packing.packing import Packing
-from attila.tiling.sources import Sources, Source, BoundingBox_to_Polygon
+from attila.tiling.sources import Sources, BoundingBox_to_Polygon
 from attila.field.field import Field
 
 import shapely as sh
 from shapely.plotting import plot_polygon
 
-from scipy import ndimage
-from photutils.segmentation import SegmentationImage
-
-import pathlib
-
-import pandas as pd
-
 import json
+import os
 
 from rasterio.features import shapes
 
@@ -261,8 +253,11 @@ class InteractivePlotter:
     of a source selects it; pressing `0`, `1` or `2` then stores that
     key as the class of the selected source and redraws its box in
     red, blue (`C0`) or orange (`C1`) respectively. Pressing `q` closes
-    the figure. Every source starts in class `'1'`. The meaning of the
-    three classes is not defined in this module.
+    the figure. The class is the likelihood that the source is an
+    ultra-diffuse galaxy: `'0'` no, `'1'` maybe, `'2'` yes. Every
+    source starts in class `'1'`. The two-part colour scale of `_plot`
+    is split at 25 mag / arcsec^2 in g to make such galaxies stand
+    out.
 
     Attributes
     ----------
@@ -400,7 +395,7 @@ class InteractivePlotter:
         Write the classification to a JSON file.
 
         The file is `output/classification/<filename>.json`, relative
-        to the current working directory; the folder must exist.
+        to the current working directory.
 
         Parameters
         ----------
@@ -413,6 +408,8 @@ class InteractivePlotter:
             The `classification` dictionary.
         """
 
+        os.makedirs("output/classification", exist_ok=True)
+
         with open(f"output/classification/{filename}.json", 'w+') as f:
             json.dump(self.classification, f, indent=4)
 
@@ -424,8 +421,7 @@ class InteractivePlotter:
 
         The colours are orange (`C1`) for `'2'`, blue (`C0`) for `'1'`
         and red for `'0'`. The new outline is drawn over the existing
-        ones, which are not removed; for class `'0'` it is drawn
-        twice. Any other value draws nothing.
+        ones, which are not removed. Any other value draws nothing.
 
         Parameters
         ----------
@@ -452,12 +448,6 @@ class InteractivePlotter:
 
         elif classification == '0':
             edgecolor = 'red'
-
-            plot_polygon(polygon, ax=self.ax, add_points=False, facecolor='none', edgecolor=edgecolor, alpha=1, lw=2)
-            self.fig.canvas.draw()
-
-        # elif self.classification[self.selected_polygon_index] == '--':
-        #     edgecolor = 'C0'
 
             plot_polygon(polygon, ax=self.ax, add_points=False, facecolor='none', edgecolor=edgecolor, alpha=1, lw=2)
             self.fig.canvas.draw()

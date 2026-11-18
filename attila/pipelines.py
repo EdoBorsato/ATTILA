@@ -19,21 +19,16 @@ The signatures are such that the stages can be chained as
 
 The functions are a reference implementation: the parameters of the
 detection (kernel width, threshold, minimum area, deblending levels)
-and the input and output paths are hard-coded, the field must have the
-bands `'g'` and `'r'`, and the paths are relative to the current
-working directory.
+are hard-coded, the field must have the bands `'g'` and `'r'`, and the
+output is written to `./output/`, relative to the current working
+directory.
 """
 
-from astropy.io import fits
-
-from attila.field.field import Field, Image, MultibandImage
-
-from astropy.cosmology.realizations import Planck18
+from attila.field.field import Field
 
 from astropy import units as u
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 from astropy.convolution import Gaussian2DKernel, convolve_fft
 from functools import partial
@@ -52,17 +47,14 @@ from tqdm import tqdm
 import warnings
 from photutils.segmentation import SegmentationImage
 
-from os import path
 import os
 
 from attila import attila_logger
 
 from typing import Dict
-from numpy.typing import ArrayLike
 
 from attila.deblending.deblending import deblend as photutils_deblend
 from multiprocessing import Pool
-import warnings
 
 def combine(field: Field, tiling: Tiling):
     """
@@ -211,19 +203,18 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
        (`Extinction.compute_extinction_from_tiling`) and assigned to
        every source according to the tile polygon that contains its
        centre (`Extinction.apply_grid_to_sources`). The tiles used are
-       those of the input `tiling`; a second tiling with tiles of
-       3 arcmin, `extinction_tiling`, is built but not used.
-    6. Properties. The image cutouts of the sources are extracted from
-       an array of shape `(n_bands, n_y, n_x)` and the measurements of
+       those of `extinction_tiling`, a dedicated tiling with tiles of
+       3 arcmin, since the reddening varies on scales smaller than
+       the detection tiles.
+    6. Properties. The image cutouts of the sources are extracted
+       from the images of the field and the measurements of
        `Properties.detection_properties` are run, with the extinction
        of step 5.
     7. Output. The sources are saved with `Sources.save_light` in
-       `./output/detection/<threshold>_<nconn>/`. The folder
-       `./output` must already exist.
+       `./output/detection/<threshold>_<nconn>/`.
 
-    The filter curves are read from `../synphot_filters/` and the SFD
-    dust map from `../dustmaps/`, relative to the current working
-    directory.
+    The filter curves and the SFD dust map are read from the
+    `synphot_filters` and `dustmaps` folders of the repository.
 
     Parameters
     ----------
@@ -326,29 +317,22 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
     ext = Extinction(
         field = field,
         extinction_map_name = 'sfd',
-        filters_folder='../synphot_filters/',
-        extinction_maps_folder='../dustmaps/',
         bands=['SLOAN_SDSS.g', 'SLOAN_SDSS.r'],
         )
 
-    # The grid is evaluated on the tiles of `tiling`, not on those of
-    # `extinction_tiling`.
-    ext.compute_extinction_from_tiling(coord_list=tiling.centres,
-                                    regions=tiling.polygons)
+    ext.compute_extinction_from_tiling(coord_list=extinction_tiling.centres,
+                                    regions=extinction_tiling.polygons)
 
     A_lambda = ext.apply_grid_to_sources(sources)
 
     attila_logger.logger.info("Load the data")
 
-    data_dict = field.multibandimages.property_dict(["data"])
-
-    # Stack the bands into one array of shape (n_bands, n_y, n_x).
-    sources.get_data(np.asarray([data_dict[band]['data'].astype(np.float32) for band in field.bands]))
-
+    sources.get_data(field.multibandimages)
 
     attila_logger.logger.info("Compute the properties of the sources...")
 
     with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
 
         props = Properties(sources, field)
 
@@ -357,18 +341,43 @@ def detect(output_detarray_dict: Dict, field: Field, tiling: Tiling):
 
     attila_logger.logger.info("All done! Outputting the detection results...")
 
-    if path.exists('./output/detection') == False:
-        os.mkdir('./output/detection')
-
-    if path.exists(f'./output/detection/{threshold}_{nconn}') == False:
-        os.mkdir(f'./output/detection/{threshold}_{nconn}')
-
-    if path.exists('./output/detection') == False:
-        os.mkdir('./output/detection')
+    os.makedirs(f'./output/detection/{threshold}_{nconn}', exist_ok=True)
 
     sources.save_light(f'./output/detection/{threshold}_{nconn}')
 
     return sources, ext, field, tiling, threshold, nconn
+
+def _deblend_source(source, nlevels):
+    """
+    Deblend one source and attach the result to it.
+
+    The function is defined at module level so that it can be sent to
+    the worker processes of a `multiprocessing.Pool`.
+
+    Parameters
+    ----------
+    source : Source
+        The source to deblend.
+    nlevels : int
+        The number of multi-threshold levels.
+
+    Returns
+    -------
+    Source
+        The same source, with the deblended segmentation image in its
+        attribute `deblend`.
+    """
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        source.deblend = photutils_deblend(
+            detection_array=source.det_arr,
+            segmap=SegmentationImage(source.label*source.segment.astype(int)),
+            nlevels=nlevels,
+        )
+        return source
+
 
 def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, threshold: int, nconn: int):
     """
@@ -384,8 +393,8 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
        segment of the source alone, with its label. The resulting
        segmentation image is assigned to the attribute `deblend` of
        the source. The sources are processed by a pool of 8 worker
-       processes; the values returned by the workers are not
-       collected.
+       processes and replace the content of `sources`, in the same
+       order.
     2. Sources. A new `Sources` container is built with
        `Sources.from_deblend`: a source split into several components
        is replaced by one source per component, each keeping the label
@@ -398,10 +407,7 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
        in `detect`.
     5. Output. The deblended sources are saved with
        `Sources.save_light` in
-       `./output/deblend/<threshold>_<nconn>_<nlevels>/`. The folder
-       `./output` must already exist.
-
-    Nothing is returned.
+       `./output/deblend/<threshold>_<nconn>_<nlevels>/`.
 
     Parameters
     ----------
@@ -420,51 +426,23 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
     nconn
         The minimum number of connected pixels used in `detect`; it
         only enters the name of the output folder.
+
+    Returns
+    -------
+    Sources
+        The deblended sources, with their `properties` table.
     """
 
     attila_logger.logger.info("deblending the data...")
 
-    # Number of deblending levels; used in the name of the output
-    # folder. The call below passes the same value as a literal.
+    # Number of multi-threshold deblending levels.
     nlevels = 10
 
-    def photutils_deblend_source(source):
-        """
-        Deblend one source and attach the result to it.
-
-        Parameters
-        ----------
-        source : Source
-            The source to deblend.
-
-        Returns
-        -------
-        Source
-            The same source, with the deblended segmentation image in
-            its attribute `deblend`.
-        """
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-
-            source.deblend = photutils_deblend(
-                detection_array=source.det_arr,
-                segmap=SegmentationImage(source.label*source.segment.astype(int)),
-                nlevels=10,
-            )
-            return source
-
-
     with Pool(processes=8) as pool:
-        list(tqdm(pool.imap_unordered(photutils_deblend_source, sources), total=len(sources)))
-
-    # Serial version of the deblending loop, kept for reference.
-    # for source in tqdm(sources):
-    #     source.deblend = photutils_deblend(
-    #         detection_array=source.det_arr,
-    #         segmap=SegmentationImage(source.label*source.segment.astype(int)),
-    #         nlevels=nlevels,
-    #     )
+        sources.sources = list(tqdm(
+            pool.imap(partial(_deblend_source, nlevels=nlevels), sources.sources),
+            total=len(sources)
+        ))
 
     deblended_sources = Sources.from_deblend(sources)
 
@@ -472,10 +450,7 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
 
     attila_logger.logger.info("Load the data")
 
-    data_dict = field.multibandimages.property_dict(["data"])
-
-    # Stack the bands into one array of shape (n_bands, n_y, n_x).
-    deblended_sources.get_data(np.asarray([data_dict[band]['data'].astype(np.float32) for band in field.bands]))
+    deblended_sources.get_data(field.multibandimages)
 
     props = Properties(deblended_sources, field)
     props.A = A_lambda
@@ -483,16 +458,13 @@ def deblend(sources: Sources, ext: Extinction, field: Field, tiling: Tiling, thr
     attila_logger.logger.info("Compute the properties of the sources...")
 
     with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         deblended_sources = props.detection_properties()
 
     attila_logger.logger.info("All done! Outputting the detection results...")
 
-    if path.exists('./output/deblend') == False:
-        os.mkdir('./output/deblend')
-
-    if path.exists(f'./output/deblend/{threshold}_{nconn}_{nlevels}') == False:
-        os.mkdir(f'./output/deblend/{threshold}_{nconn}_{nlevels}')
+    os.makedirs(f'./output/deblend/{threshold}_{nconn}_{nlevels}', exist_ok=True)
 
     deblended_sources.save_light(f'./output/deblend/{threshold}_{nconn}_{nlevels}')
 
-        # return deblended_sources, ext, field, tiling
+    return deblended_sources

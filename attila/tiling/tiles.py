@@ -9,15 +9,8 @@ tile has been processed, pastes its results back into the mosaic.
 `BaseTile` is the generic container. `ConvolutionTile` and
 `DetectionTile` add the methods that apply a smoothing function and
 a detection function to the detection array of the tile.
-
-`BaseTile` is a near-duplicate of the older
-`attila.abstract.abstract_things.BaseBox`.
 """
 import numpy as np
-
-# from abc import ABC, abstractmethod, abstractproperty, abstractclassmethod
-
-from attila.abstract.abstract_things import AbstractBox
 
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -41,17 +34,12 @@ class BaseTile():
     of each array. It can be written to and read from a folder, cropped
     of its overlap region and queried for a subset of its data.
 
-    This class is a near-duplicate of the older `BaseBox` of
-    `attila.abstract.abstract_things`. The differences are that here
-    `add_data` also stores the registration information and accepts
-    lists, and that there is no `add_reg` method.
-
     Attributes
     ----------
     shape : tuple
-        The shape of the tile, as passed to the constructor.
-    overlap : float or int
-        The overlap with the neighbouring tiles.
+        The sky shape of the tile in degrees.
+    overlap : float
+        The overlap with the neighbouring tiles in degrees.
     bands : list of str
         The names of the bands.
     working_bands : list of str
@@ -80,13 +68,11 @@ class BaseTile():
         Parameters
         ----------
         shape : tuple
-            The shape of the tile. `Tiling.get_tile_data` passes the sky
-            shape in degrees; `remove_overlap` treats it as a shape in
-            pixels.
-        overlap : float or int
-            The overlap with the neighbouring tiles.
-            `Tiling.get_tile_data` passes it in degrees;
-            `remove_overlap` uses it as a number of pixels.
+            The sky shape of the tile in degrees. Note that
+            `remove_overlap` still treats it as a shape in pixels.
+        overlap : float
+            The overlap with the neighbouring tiles in degrees. Note
+            that `remove_overlap` still uses it as a number of pixels.
         bands : list of str
             The names of the bands.
         index : int
@@ -127,7 +113,7 @@ class BaseTile():
         Return the metadata dictionary, building it on first access.
 
         If no metadata have been set, a dictionary with the keys
-        `index`, `shape`, `bands`, `overlap` (cast to an integer) and
+        `index`, `shape`, `bands`, `overlap` (in degrees) and
         `data_keywords` is created from the current attributes and
         cached. Later changes of the attributes are not propagated to
         the cached dictionary, except for `data_keywords`, which is
@@ -143,7 +129,7 @@ class BaseTile():
             self._metadata = {"index": self.index,  # The tile index.
                             "shape": tuple(self.shape),  # Two values.
                             "bands": self.bands,  # A list of strings.
-                            "overlap": int(self.overlap),  # An integer.
+                            "overlap": float(self.overlap),  # In degrees.
                             "data_keywords": self.data_keywords  # A list of strings.
                             }
 
@@ -203,7 +189,7 @@ class BaseTile():
         `<key>.npy` (unsigned 32-bit integers) if the array is a
         photutils `SegmentationImage`, otherwise `<key>.fits` (32-bit
         floats) with a header built from the WCS stored in
-        `reg[band]["wcs"]`. Missing folders are created (one level at a
+        `reg[band][key]`, if any. Missing folders are created (one level at a
         time) and existing FITS files are overwritten.
 
         Parameters
@@ -235,7 +221,10 @@ class BaseTile():
                     np.save(data_path+".npy", self.data2D[band][key].data.astype(np.uint32))
 
                 else:
-                    fits.writeto(data_path+".fits", self.data2D[band][key].astype(np.float32), header=self.reg[band]["wcs"].to_header(), overwrite=True)
+                    wcs = self.reg[band].get(key)
+                    header = wcs.to_header() if wcs is not None else None
+
+                    fits.writeto(data_path+".fits", self.data2D[band][key].astype(np.float32), header=header, overwrite=True)
 
 
     @classmethod
@@ -246,11 +235,9 @@ class BaseTile():
         The constructor arguments (`shape`, `overlap`, `bands`, `index`)
         are taken from `metadata.json` and the full metadata dictionary
         is attached to the new object. For every band and every data
-        keyword, the key `"segmap"` is read from `<key>.npy` and wrapped
-        in a photutils `SegmentationImage`; any other key is read from
-        `<key>.fits` as 32-bit floats. After each key the WCS built from
-        the last FITS header read is registered with `add_reg` under the
-        name `"wcs"`.
+        keyword, a key stored as `<key>.npy` is wrapped in a photutils
+        `SegmentationImage`; any other key is read from `<key>.fits` as
+        32-bit floats, together with the WCS of its header.
 
         Parameters
         ----------
@@ -283,21 +270,17 @@ class BaseTile():
             for key in metadata["data_keywords"]:
                 data_path = path.join(box_band_path, f"{key}")
 
-                if key == "segmap":
+                if path.exists(data_path + ".npy"):
                     # Segmentation maps are stored as .npy files.
-                    # segmap_data = fits.getdata(data_path)
-
                     segmap_data = np.load(data_path + ".npy")
                     segmap = SegmentationImage(segmap_data)
 
                     box.add_data(band, key, segmap)
 
                 else:
-                    box.add_data(band, key, fits.getdata(data_path + ".fits").astype(np.float32))
-
                     hdr = fits.getheader(data_path + ".fits")
 
-                box.add_reg(band, "wcs", WCS(hdr))
+                    box.add_data(band, key, fits.getdata(data_path + ".fits").astype(np.float32), WCS(hdr))
 
         return box
     
@@ -389,14 +372,14 @@ class BaseTile():
             The arrays as `extracted[band][keyword]`. They are
             references to the stored arrays, not copies.
         """
-        exctracted_data={}
+        extracted_data={}
         for band in bands:
-            exctracted_data[band]={}
+            extracted_data[band]={}
 
             for keyword in keywords:
-                exctracted_data[band][keyword]=self.data2D[band][keyword]
+                extracted_data[band][keyword]=self.data2D[band][keyword]
 
-        return exctracted_data
+        return extracted_data
     
 
 class ConvolutionTile(BaseTile):

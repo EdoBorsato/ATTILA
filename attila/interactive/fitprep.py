@@ -21,7 +21,6 @@ scale between `sb_upper` and `sb_max` (both in mag / arcsec^2,
 converted to pixel values by `_compute_cps_SB` of
 `attila.packing.interactive`).
 """
-import astrophot as ap
 
 import numpy as np
 
@@ -29,13 +28,10 @@ import numpy as np
 # from photutils.isophote.geometry import EllipseGeometry
 # from photutils.aperture import EllipticalAperture
 
-
 import matplotlib.pyplot as plt
 from shapely.plotting import plot_polygon
 
 # from astropy.io import fits
-
-from typing import List, Dict, Tuple
 
 # import pandas as pd
 
@@ -52,17 +48,15 @@ from functools import partial
 
 # from copy import deepcopy
 
-from matplotlib import colormaps as mcmaps
 # from matplotlib.colors import Normalize 
 # from matplotlib.widgets import Button
 # from threading import Event
 # import shapely as sh
-from shapely.plotting import plot_polygon
 
 # from attila.field.field import Field
 # from attila.tiling.sources import Source, Sources
-from attila.interactive.masking_segment import InteractiveMaskDrawer, InteractiveMaskDilator, _project_polygon
-from attila.interactive.masking_segment import InteractiveSegmentDrawer, InteractiveSegmentSelector, _project_polygon
+from attila.interactive.masking_segment import InteractiveMaskDrawer, InteractiveMaskDilator
+from attila.interactive.masking_segment import InteractiveSegmentDrawer, InteractiveSegmentSelector
 
 # from attila.fitting.deblend_2D import AP_deblend, load_results
 from attila.packing.interactive import _compute_cps_SB, _correct_for_polygon_shift, _get_polygons_from_segment
@@ -130,12 +124,12 @@ def _plot_data(fig, ax, data, noise, sb_func, sb_upper, sb_max):
     # drawn on top, only shows the pixels above it.
     img = data/noise
     img_bot = np.where(img <= threshold_upper_SNR, img, threshold_upper_SNR)
-    im1 = ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
+    ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
 
     if np.any(img >= threshold_upper_SNR):
         img_top = np.ma.masked_where(img <= threshold_upper_SNR, img)
         norm = mcolors.LogNorm(vmin=threshold_upper_SNR, vmax=threshold_max_SNR)
-        im2 = ax.imshow(img_top, norm=norm, origin='lower', cmap=top)
+        ax.imshow(img_top, norm=norm, origin='lower', cmap=top)
 
     # ax.set_xlim(-.5, data.shape[1]-0.5)
     # ax.set_ylim(-0.1, data.shape[0]-0.5)
@@ -312,12 +306,12 @@ def _plot_model(fig, ax, model_image, noise, sb_func, sb_upper, sb_max):
 
     img = model_image / median_noise
     img_bot = np.where(img <= threshold_upper_SNR, img, threshold_upper_SNR)
-    im1 = ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
+    ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
 
     if np.any(img >= threshold_upper_SNR):
         img_top = np.ma.masked_where(img <= threshold_upper_SNR, img)
         norm = mcolors.LogNorm(vmin=threshold_upper_SNR, vmax=threshold_max_SNR)
-        im2 = ax.imshow(img_top, norm=norm, origin='lower', cmap=top)
+        ax.imshow(img_top, norm=norm, origin='lower', cmap=top)
 
     kernel = Gaussian2DKernel(x_stddev=1.5, y_stddev=1.5)
 
@@ -378,12 +372,12 @@ def _plot_residual(fig, ax, residual, noise, sb_func, sb_upper, sb_max):
 
     img = residual / noise
     img_bot = np.where(img <= threshold_upper_SNR, img, threshold_upper_SNR)
-    im1 = ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
+    ax.imshow(img_bot, vmin=-3, vmax=threshold_upper_SNR, origin='lower', cmap=bottom)
 
     if np.any(img >= threshold_upper_SNR):
         img_top = np.ma.masked_where(img <= threshold_upper_SNR, img)
         norm = mcolors.LogNorm(vmin=threshold_upper_SNR, vmax=threshold_max_SNR)
-        im2 = ax.imshow(img_top, norm=norm, origin='lower', cmap=top)
+        ax.imshow(img_top, norm=norm, origin='lower', cmap=top)
 
     kernel = Gaussian2DKernel(x_stddev=1.5, y_stddev=1.5)
 
@@ -583,8 +577,8 @@ class PlotTarget:
 
         [ax.clear() for ax in self.axs]
 
-        xlim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
-        ylim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        xlim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        ylim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
 
         if zoom[0]:
             xlim = (xlim[0] + xlim[1]) /2. - zoom[1]/2., (xlim[0] + xlim[1]) /2. + zoom[1]/2.
@@ -645,8 +639,8 @@ class PlotTarget:
 
         [ax.clear() for ax in self.axs]
 
-        xlim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
-        ylim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        xlim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        ylim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
 
         if zoom[0]:
             xlim = (xlim[0] + xlim[1]) /2. - zoom[1]/2., (xlim[0] + xlim[1]) /2. + zoom[1]/2.
@@ -968,8 +962,8 @@ class PlotApModel:
 
         [ax.clear() for ax in self.axs]
 
-        xlim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
-        ylim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        xlim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        ylim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
 
         if zoom[0]:
             xlim = (xlim[0] + xlim[1]) /2. - zoom[1]/2., (xlim[0] + xlim[1]) /2. + zoom[1]/2.
@@ -1030,8 +1024,8 @@ class PlotApModel:
 
         [ax.clear() for ax in self.axs]
 
-        xlim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
-        ylim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        xlim = -0.1 * self.data.shape[1], self.data.shape[1] * 1.1
+        ylim = -0.1 * self.data.shape[0], self.data.shape[0] * 1.1
 
         if zoom[0]:
             xlim = (xlim[0] + xlim[1]) /2. - zoom[1]/2., (xlim[0] + xlim[1]) /2. + zoom[1]/2.

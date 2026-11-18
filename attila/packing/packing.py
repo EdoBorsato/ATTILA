@@ -20,7 +20,6 @@ import rpack
 
 import numpy as np
 import matplotlib.pyplot as plt
-import shapely as sh
 from shapely.plotting import plot_polygon
 
 from functools import partial

@@ -7,17 +7,9 @@ bad stretches of a radial profile (e.g. the isophote table shown by
 picking two points of the plotted profile; `to_mask` turns them into a
 boolean mask over the profile samples.
 """
-import shapely as sh
-
-from shapely.plotting import plot_polygon
-
-from scipy.ndimage import binary_dilation, label
 
 import numpy as np
 
-import matplotlib.pyplot as plt
-
-from scipy.spatial import ConvexHull
 
 class InteractiveProfileMask:
     """
@@ -61,18 +53,18 @@ class InteractiveProfileMask:
         Update `mask` with the selected index ranges.
 
         The mask is converted to boolean and, for every pair in
-        `ranges`, the slice `lower_index:upper_index` is set to `True`
-        (the upper index itself is excluded). The result replaces the
-        `mask` attribute; nothing is returned.
+        `ranges`, the points from `lower_index` to `upper_index`, both
+        included, are set to `True`, as hatched on the plot. The result
+        replaces the `mask` attribute; nothing is returned.
         """
 
-        if self.mask is not None:
-            self.mask = self.mask.astype(bool)
-        else:
-            self.mask = np.zeros(self.mask.shape)
+        if self.mask is None:
+            raise ValueError("An input mask is needed to define the shape of the output.")
 
-        for _range in self.ranges:
-            self.mask[slice(*_range)] = True
+        self.mask = self.mask.astype(bool)
+
+        for lower, upper in self.ranges:
+            self.mask[lower:upper + 1] = True
 
 class InteractiveProfileMasking(InteractiveProfileMask):
     """

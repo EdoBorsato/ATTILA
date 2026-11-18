@@ -37,8 +37,6 @@ from scipy.ndimage import binary_dilation, label
 
 import numpy as np
 
-import matplotlib.pyplot as plt
-
 from scipy.spatial import ConvexHull
 
 
@@ -205,10 +203,10 @@ class InteractiveMask:
             The boolean mask, shape `(n_rows, n_cols)`.
         """
 
-        if self.mask is not None:
-            mask = self.mask.astype(bool)
-        else:
-            mask = np.zeros(self.mask.shape)
+        if self.mask is None:
+            raise ValueError("An input mask is needed to define the shape of the output.")
+
+        mask = self.mask.astype(bool)
 
         for poly in self.polys:
 
@@ -488,7 +486,7 @@ class InteractiveMaskDilator(InteractiveMask):
                         self.plot_masks()
 
             # Right click: accept the dilated polygon.
-            if event.button == 3:
+            if event.button == 3 and hasattr(self, 'dilated_segment_polygon'):
 
                 self.polys.append(self.dilated_segment_polygon)
 
@@ -581,10 +579,10 @@ class InteractiveSegment:
             The new segmentation map, shape `(n_rows, n_cols)`.
         """
 
-        if self.segment is not None:
-            segment = self.segment.astype(np.int32)
-        else:
-            segment = np.zeros(self.segment.shape)
+        if self.segment is None:
+            raise ValueError("An input segmentation map is needed to define the shape of the output.")
+
+        segment = self.segment.astype(np.int32)
 
         self.max_label = np.max(segment)
 
@@ -653,8 +651,8 @@ class InteractiveSegmentDrawer(InteractiveSegment):
         clicked position, append it as a vertex and, from the third
         vertex on, rebuild `poly` and draw it as a dashed preview. Right
         button (3): accept `poly`, redraw it with a solid edge and start
-        a new polygon; the accepted polygon is appended to `polys` twice
-        (before and after the redraw). Middle button (2): remove the
+        a new polygon; the accepted polygon is appended to `polys`.
+        Middle button (2): remove the
         last vertex and its marker; `poly` is not rebuilt from the
         remaining vertices, it is only reset to `None` when fewer than
         three vertices are left.
@@ -719,8 +717,6 @@ class InteractiveSegmentDrawer(InteractiveSegment):
                     self.poly_points = []
                     self.poly_plots = []
                     self.points_plots = []
-                    
-                    self.polys.append(self.poly)
 
                 else:
                     raise ValueError("Not enough points to create a polygon.")

@@ -22,121 +22,22 @@ the units of the images (per pixel).
 import numpy as np
 from numpy.typing import ArrayLike
 
-from astropy.io import ascii as asciii
-
 from photutils.isophote import EllipseGeometry, EllipseSample, Isophote, IsophoteList, Ellipse, build_ellipse_model
 from photutils.aperture import EllipticalAperture
 
-from astropy.table import vstack, hstack
+from typing import Dict, Union
 
-from typing import List, Dict, Tuple, Union, Optional
-
-from attila import attila_logger
 from attila.fitting.COG import COG
-from attila.interactive.fitprep import _compute_cps_SB, _plot_data
+from attila.interactive.fitprep import _plot_data
 
 import matplotlib.pyplot as plt
-from matplotlib import colormaps as mcmaps
-from matplotlib import colors as mcolors
 
 import shelve
-
-import os
 
 import ipywidgets as widgets
 from IPython.display import display
 
-from copy import deepcopy
-
 from functools import partial
-
-
-def _exclude_bad_isophotes(isolist, bad_stops=[3,5], intensity_constraint=None, eps_max=0.85, save=True):
-        """
-        Return the isophotes that pass the quality cuts.
-
-        An isophote is kept only if its mean intensity is larger than
-        `intensity_constraint`, its `photutils` stop code is not in
-        `bad_stops` and its ellipticity is smaller than `eps_max`. With
-        the default `bad_stops` the fits flagged with stop code 3
-        (singular matrix or too few points in the harmonic fit) and 5
-        (ellipse diverged) are removed.
-
-        Parameters
-        ----------
-        isolist : photutils.isophote.IsophoteList
-            The isophotes to filter.
-        bad_stops : list of int
-            The `photutils` stop codes of the isophotes to exclude.
-        intensity_constraint : float, optional
-            The minimum mean intensity of an isophote, in image units.
-            `None` means no cut on the intensity.
-        eps_max : float
-            The maximum ellipticity (`1 - b/a`) of an isophote.
-        save : bool
-            Not used.
-
-        Returns
-        -------
-        photutils.isophote.IsophoteList
-            The isophotes that pass all the cuts.
-        """
-        isophotes = []
-
-        if intensity_constraint is None:
-            intensity_constraint=-np.inf
-
-        for iso in isolist:
-            if iso.intens>intensity_constraint:
-                if iso.stop_code not in bad_stops:
-                    if iso.eps<eps_max:
-
-                        isophotes.append(iso)
-
-        return IsophoteList(isophotes)
-
-def _fit_initial(ellipse_geometry, ellipse):
-    """
-    Refine an initial ellipse geometry with fits at growing radii.
-
-    A single isophote is fitted ten times with `ellipse.fit_isophote`,
-    at semi-major axes of 5, 7, ..., 23 pixels. After each fit the
-    centre, the ellipticity and the position angle of the fitted
-    isophote are copied into `ellipse_geometry`, which is modified in
-    place.
-
-    Parameters
-    ----------
-    ellipse_geometry : photutils.isophote.EllipseGeometry
-        The geometry to update.
-    ellipse : photutils.isophote.Ellipse
-        The fitter, already bound to an image.
-
-    Returns
-    -------
-    ellipse_geometry : photutils.isophote.EllipseGeometry
-        The input geometry, with the parameters of the last fit and a
-        semi-major axis of 23 pixels.
-    isophote : photutils.isophote.Isophote
-        The isophote of the last fit.
-    """
-
-    i = 0
-    while (i < 10):
-
-        ellipse_geometry.sma = 5 + 2*i
-
-        isophote = ellipse.fit_isophote(sma=5 + 2*i)
-
-        ellipse_geometry.x0 = isophote.x0
-        ellipse_geometry.y0 = isophote.y0
-        ellipse_geometry.sma = 5 + 2*i
-        ellipse_geometry.eps = isophote.eps
-        ellipse_geometry.pa = isophote.pa
-
-        i += 1
-
-    return ellipse_geometry, isophote
 
 
 class Ellipse_isophote:
@@ -662,7 +563,7 @@ def _plot_profile(fig, ax, x, y, y_err):
     Plot a radial intensity profile on a logarithmic y axis.
 
     The profile is shifted vertically by subtracting the minimum of
-    `y - y_err`, so that the lowest error bar starts at zero and the
+    `y - y_err` (of `y` without uncertainties), so that the lowest error bar starts at zero and the
     shifted values can be shown on a logarithmic scale. The points are
     drawn as a pickable scatter, so that they can be selected with the
     mouse, and the y limits are frozen.
@@ -678,13 +579,16 @@ def _plot_profile(fig, ax, x, y, y_err):
     y : numpy.ndarray
         The intensities of the profile, in image units.
     y_err : numpy.ndarray
-        The uncertainties on the intensities. They are used in the
-        vertical shift before the check for `None`.
+        The uncertainties on the intensities. If None, no error bars
+        are drawn and the profile is shifted by its minimum.
     """
 
-    y_based = y - np.nanmin(y - y_err)
+    if y_err is not None:
+        y_based = y - np.nanmin(y - y_err)
+    else:
+        y_based = y - np.nanmin(y)
 
-    sc = ax.scatter(x, y_based, color='C0', s=10, picker=True)
+    ax.scatter(x, y_based, color='C0', s=10, picker=True)
 
     if y_err is not None:
         ax.errorbar(x, y_based, yerr=y_err, ls='none', color='C0', marker='none', elinewidth=1, capsize=3)

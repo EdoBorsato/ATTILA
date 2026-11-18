@@ -28,30 +28,17 @@ The output is meant as a test image with known input parameters for
 the detection and fitting steps of ATTILA.
 """
 import numpy as np
-import matplotlib.pyplot as plt
 
 import autogalaxy as ag
-import autogalaxy.plot as aplt
 
 from astropy.io import fits
 from astropy.wcs import WCS
 
-from attila.utils.image_utils import compute_pixel_scale
-
-from astropy import units as u
 from astropy.cosmology.realizations import Planck18 as cosmo
-
-from astropy.cosmology import units as cu
 
 import shapely as sh
 
-from shapely.plotting import  plot_polygon, plot_points
-
-from attila.utils.image_utils import compute_pixel_scale
-
 import rpack
-
-import copy
 
 from tqdm import tqdm
 
@@ -63,7 +50,6 @@ import pandas as pd
 noise = fits.getdata("/media/edoardo/T7/sunrise/images/PGC7748/PGC7748_g_noise.fits")
 hdr = fits.getheader("/media/edoardo/T7/sunrise/images/PGC7748/PGC7748_g_noise.fits")
 wcs = WCS(hdr)
-
 
 # ----------------------------------------------------------------------
 # Distance and scale conversions at the redshift of the field.
@@ -81,7 +67,6 @@ pixel_to_arcsec = 0.2
 # Physical size of a pixel, in kpc / pixel.
 pixel_to_kpc = arcsec_to_kpc * pixel_to_arcsec
 
-
 # ----------------------------------------------------------------------
 # Photometric calibration of the g band. These terms relate the counts
 # per pixel I to the surface brightness used in this script:
@@ -98,7 +83,6 @@ dimming = 2.5 * np.log10((1 + z_BGC_PGC7748)**4)
 
 # Pixel-area term, 5 log10(pixel scale in arcsec).
 pix_size_corr = 5 * np.log10(pixel_to_arcsec)
-
 
 # ----------------------------------------------------------------------
 # Ranges of the uniform distributions of the Sersic parameters.
@@ -123,7 +107,6 @@ pa_range = [0, 90]
 # Number of mock galaxies.
 N_samples = 100
 
-
 # ----------------------------------------------------------------------
 # Random draw of the parameters, one value per galaxy.
 # ----------------------------------------------------------------------
@@ -138,10 +121,8 @@ Re_kpc_sample = np.random.uniform(Re_range[0], Re_range[1], N_samples)
 q_sample = np.random.uniform(q_range[0], q_range[1], N_samples)
 pa_sample = np.random.uniform(pa_range[0], pa_range[1], N_samples)
 
-
 # Effective radius in pixels.
 Re_sample = Re_kpc_sample / pixel_to_kpc.to_value()
-
 
 # Central surface brightness range in mag / arcsec^2, faint to bright,
 # converted to central intensities in counts per pixel by inverting the
@@ -161,7 +142,6 @@ b = 1.9992*n_sample-0.3271
 # Intensity at the effective radius, I_e = I_0 exp(-b_n), which is the
 # normalisation expected by the Sersic profile of PyAutoGalaxy.
 Ie_sample = I0_sample / np.exp(b)
-
 
 # ----------------------------------------------------------------------
 # Box of every galaxy and packing of the boxes. The box sides, in
@@ -195,7 +175,6 @@ bboxes = [sh.box(x[i] - 0.5*widths[i], y[i] - 0.5*heights[i], x[i] + 0.5*widths[
 # and the reversal gives the numpy order (n_y, n_x).
 bounding_shape = rpack.bbox_size(sizes, bottom_left_corners)[::-1]
 
-
 # ----------------------------------------------------------------------
 # PSF, noise level and empty mock image.
 # ----------------------------------------------------------------------
@@ -214,7 +193,6 @@ mock_data = np.zeros(bounding_shape)
 simulator = ag.SimulatorImaging(
     exposure_time=1.0, psf=psf, background_sky_level=0.0, add_poisson_noise=False, noise_if_add_noise_false=0.1
 )
-
 
 # ----------------------------------------------------------------------
 # Simulation of every galaxy on its own grid and insertion in the mock
@@ -254,7 +232,6 @@ for i, size, blc in tqdm(zip(range(len(sizes)), sizes, bottom_left_corners), tot
     # Gaussian noise with the median noise level as standard deviation.
     noisy_mock_data = np.random.normal(mock_data, noisemap)
 
-
     # Table of the true parameters: box centre (x, y) in pixels of the
     # mock image, effective radius in pixels (`Re`) and in kpc
     # (`Re_kpc`), axis ratio, position angle in deg, Sersic index,
@@ -274,7 +251,4 @@ for i, size, blc in tqdm(zip(range(len(sizes)), sizes, bottom_left_corners), tot
     reference_table.to_csv(f'input_parameters.csv', index=False)
 
     np.save('mock_data.npy', noisy_mock_data)
-
-
-
 

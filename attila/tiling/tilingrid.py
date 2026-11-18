@@ -38,13 +38,8 @@ from shapely.plotting import plot_polygon
 import matplotlib.pyplot as plt
 import pandas as pd
 
-import warnings
-
 from os import path
 import pickle
-
-# The supported ways of combining the footprints of the bands.
-tiling_types = ['intersection']
 
 # The supported tile layouts: a regular grid or given centres.
 grid_types = ['grid','sparse']
@@ -173,9 +168,9 @@ def _make_grid_tiling(
     strip of width `overlap`. The tiles are rectangles in the (RA, Dec)
     coordinate plane: no `cos(Dec)` factor is applied to the RA side.
 
-    A tile is kept if it lies entirely within the polygon, or if it
-    partially overlaps it and the common area is larger than one tenth
-    of the tile area. The expected number of tiles (a float, computed
+    A tile is kept if it lies entirely within the polygon, if it
+    contains the whole polygon, or if it partially overlaps it and the
+    common area is larger than one tenth of the tile area. The expected number of tiles (a float, computed
     from the bounding box) is printed.
 
     Parameters
@@ -205,7 +200,7 @@ def _make_grid_tiling(
     side_dec=shape[1]
     
     Nmaxtile=(Deltara/(side_ra-overlap))*(Deltadec/(side_dec-overlap))
-    print('Creating {} tilees'.format(Nmaxtile))
+    print('Creating {} tiles'.format(Nmaxtile))
     
     lskycoord=[]
     lpolygons=[]
@@ -216,7 +211,7 @@ def _make_grid_tiling(
         while ra_min<ra_max:
             poly_tile=_make_tile_polygon((ra_min,dec_min),(side_ra,side_dec))
             # if sh.overlaps(intersection,poly_tile):
-            if (sh.overlaps(polygon,poly_tile) and sh.intersection(polygon,poly_tile).area>poly_tile.area/10.) or sh.within(poly_tile,polygon):
+            if (sh.overlaps(polygon,poly_tile) and sh.intersection(polygon,poly_tile).area>poly_tile.area/10.) or sh.within(poly_tile,polygon) or sh.within(polygon,poly_tile):
                 lskycoord.append(SkyCoord((ra_min+side_ra/2.)*u.deg, 
                                             (dec_min+side_dec/2.)*u.deg,
                                             frame="icrs", unit="deg"))
@@ -240,11 +235,7 @@ def _make_sparse_tiling(
     discarded with a warning.
 
     If `shapes` is a tuple the same shape is used for all tiles. If it
-    is a list, the polygon of tile `j` is built with `shapes[j]`, while
-    its lower corner is computed from `shapes[0]` and `shapes[1]`.
-
-    For every kept tile the whole `centres` object (not the single
-    centre) is appended to the returned list of centres.
+    is a list, tile `j` is built with `shapes[j]`.
 
     Parameters
     ----------
@@ -258,8 +249,8 @@ def _make_sparse_tiling(
 
     Returns
     -------
-    lskycoord : list
-        One entry per kept tile (see above for its content).
+    lskycoord : list of astropy.coordinates.SkyCoord
+        The centre of every kept tile.
     lpolygons : list of shapely.Polygon
         The footprint of every kept tile in (RA, Dec) degrees.
     """
@@ -270,21 +261,21 @@ def _make_sparse_tiling(
             poly_tile = _make_tile_polygon((centre.ra.deg-shapes[0]/2., centre.dec.deg-shapes[1]/2.), shapes)
 
             if not (sh.overlaps(polygon, poly_tile) or sh.within(poly_tile, polygon)):
-                warnings.warn("The tile with centre {} do not overlap with the wcs_dict. The centre is removed.".format(centre))
+                warnings.warn("The tile with centre {} does not overlap with the wcs_dict. The centre is removed.".format(centre))
                                                                                                                        
             else:
-                lskycoord.append(centres)
+                lskycoord.append(centre)
                 lpolygons.append(poly_tile)
     
     if type(shapes) is list:
         for j, centre in enumerate(centres):
-            poly_tile = _make_tile_polygon((centre.ra.deg-shapes[0]/2., centre.dec.deg-shapes[1]/2.), shapes[j])
+            poly_tile = _make_tile_polygon((centre.ra.deg-shapes[j][0]/2., centre.dec.deg-shapes[j][1]/2.), shapes[j])
 
             if not (sh.overlaps(polygon, poly_tile) or sh.within(poly_tile, polygon)):
-                warnings.warn("The tile with centre {} do not overlap with the wcs_dict. The centre is removed.".format(centre))
+                warnings.warn("The tile with centre {} does not overlap with the wcs_dict. The centre is removed.".format(centre))
                                                                                                                        
             else:
-                lskycoord.append(centres)
+                lskycoord.append(centre)
                 lpolygons.append(poly_tile)
 
     return lskycoord,lpolygons
@@ -323,9 +314,9 @@ def _check_nan_in_data(centres, polygons, coverage_mask_dict, shape, wcs_dict):
 
     For every tile and every band the coverage mask is cut out on the
     tile footprint (`Cutout2D`, `mode="partial"`) and the fraction of
-    non-zero pixels is computed. A tile is flagged in a band when this
-    fraction is lower than or equal to 0.9. The tiles returned are those
-    flagged in all the bands; the other tiles are dropped.
+    non-zero pixels is computed. A tile is covered in a band when this
+    fraction is larger than 0.9. The tiles returned are those covered
+    in all the bands; the other tiles are dropped.
 
     Parameters
     ----------
@@ -360,14 +351,13 @@ def _check_nan_in_data(centres, polygons, coverage_mask_dict, shape, wcs_dict):
             coverage_mask = coverage_mask_dict[band]
             coverage_cutout = Cutout2D(coverage_mask, centre, _add_quantity_tuple(shape, u.deg), wcs=wcs, mode='partial')
 
-            # Flag the tile in this band if at most 90% of its pixels
-            # are covered.
-            # if not coverage_cutout.data.all():
-            if np.count_nonzero(coverage_cutout.data)/coverage_cutout.data.size <= 0.9:
+            # Count the tile in this band if more than 90% of its
+            # pixels are covered.
+            if np.count_nonzero(coverage_cutout.data)/coverage_cutout.data.size > 0.9:
                 indexes.append(i)
           
     
-    # Keep the indexes that were flagged in every band.
+    # Keep the tiles that are covered in every band.
     unique_indexes, N = np.unique(indexes, return_counts=True)
    
     idx = np.where(N == len(bands))[0]
@@ -501,9 +491,8 @@ class Tiling:
         Set the tile shape, converting the sides to degrees.
 
         A tuple of two angular quantities is stored as a tuple of floats
-        in degrees. A list is checked to contain only tuples and is then
-        stored as given, without conversion. Any other type leaves the
-        attribute unset.
+        in degrees, and a list of such tuples as a list of tuples of
+        floats in degrees. Any other type leaves the attribute unset.
 
         Parameters
         ----------
@@ -523,11 +512,11 @@ class Tiling:
             for tile_shape_sky_i in tile_shape_sky:
                 if type(tile_shape_sky_i) is not tuple:
                     raise ValueError("tile_shape_sky must be a list of tuples of two angular astropy.units.Quantity")
-                
-                else:
-                    self._tile_shape_sky = tuple([elem.to(u.deg).value for elem in tile_shape_sky])
-                    
-            self._tile_shape_sky = tile_shape_sky
+
+            self._tile_shape_sky = [
+                tuple([elem.to(u.deg).value for elem in tile_shape_sky_i])
+                for tile_shape_sky_i in tile_shape_sky
+            ]
 
     @property
     def overlap_sky(self):
@@ -562,8 +551,8 @@ class Tiling:
         to a copy of `header_dict` and with the same tile shape,
         overlap, grid type and centres. Its tiles are then made again,
         so that they refer to the footprint common to all bands
-        including the new one. The coverage masks are not passed on. The
-        current object is not modified.
+        including the new one. The coverage masks given to `make_tiles`,
+        if any, are applied again. The current object is not modified.
 
         Parameters
         ----------
@@ -585,7 +574,7 @@ class Tiling:
 
         new_tiling = Tiling(new_header_dict, tile_shape_sky, overlap_sky, self.grid_type, self.centres)
 
-        new_tiling.make_tiles()
+        new_tiling.make_tiles(getattr(self, "coverage_mask_dict", None))
 
         return new_tiling
 
@@ -622,7 +611,7 @@ class Tiling:
             self.coverage_mask_dict=coverage_mask_dict
 
         if type(self.tile_shape_sky) is not tuple:
-            raise ValueError("get_tiling works only if tile_shape_sky is a tuple. Use make_tiling if you want tilees of different sizes")
+            raise ValueError("make_tiles works only if tile_shape_sky is a tuple: tiles of different sizes are not supported yet.")
 
         # if self.grid_type != "grid":
         #     raise ValueError("A tiling only work with a 'grid' grid type. If 'sparse' provide the centres")
@@ -641,7 +630,7 @@ class Tiling:
             index: int,
             Tile: BaseTile, 
             input_dict: Dict[str, Dict[str, npt.ArrayLike]],
-        ) -> None:
+        ) -> BaseTile:
         """
         Extract the data of one tile from full-image arrays.
 
@@ -677,7 +666,7 @@ class Tiling:
         # warnings.warn("Bands in data_dicts should match the length of wcs_dict. Each array in the propoer band should have the same wcs.")
 
         if self.centres is None:
-            raise ValueError("The centres of the tilees must be provided. Either use 'get_tiling' if grid_type is 'grid' or provide the 'centres' attribute")
+            raise ValueError("The centres of the tiles must be provided. Either call 'make_tiles' if grid_type is 'grid' or provide the 'centres' attribute")
 
         bands = list(input_dict.keys())
 
@@ -772,7 +761,7 @@ class Tiling:
             else:
                 _add_array_func(large_data, small_data, position, combine_func)
 
-    def plot_tiles(self, figsize: Tuple[int, int] = (10, 10)) -> None:
+    def plot_tiles(self, figsize: Tuple[int, int] = (10, 10)):
         """
         Plot the tiles over the common footprint in a WCS projection.
 
@@ -822,10 +811,9 @@ class Tiling:
         """
         Load a stored tile through a user-provided loader.
 
-        The tile properties are read from `tiling_table` with the
-        selection `tiling_table.loc["index" == index]`, converted to a
-        dictionary and passed to `loader` together with the file name
-        `"<index>.pkl"`.
+        The rows of `tiling_table` whose column `index` equals `index`
+        are converted to a dictionary and passed to `loader` together
+        with the file name `"<index>.pkl"`.
 
         Parameters
         ----------
@@ -843,7 +831,7 @@ class Tiling:
             The object returned by `loader`.
         """
 
-        tile_properties = tiling_table.loc["index" == index].to_dict()
+        tile_properties = tiling_table.loc[tiling_table["index"] == index].to_dict()
 
         return loader(f"{index}.pkl", tile_properties)
 
@@ -973,7 +961,7 @@ def guess_shape(
     A_tot = (ra_span * dec_span).to(u.arcmin*u.arcmin)
 
     if ra_span <= o or dec_span <= o:
-        raise ValueError("Span troppo piccolo rispetto all'overlap.")
+        raise ValueError("The span of the footprint is too small compared to the overlap.")
 
     # Smallest and largest number of tiles to try. The extra 200 is
     # a safety margin on the upper end of the search.
@@ -1017,7 +1005,7 @@ def guess_shape(
             break
 
     if best is None:
-        raise RuntimeError("Nessuna soluzione trovata nell'intervallo di area. Allarga [A_min, A_max] o modifica overlap.")
+        raise RuntimeError("No solution found in the area interval. Widen [A_min, A_max] or change the overlap.")
     best['N'] = best['nx'] * best['ny']
 
     return best

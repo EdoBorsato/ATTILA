@@ -88,11 +88,6 @@ class COG:
         interpolates the radius at a normalised flux of 0.5 between
         them.
 
-        The two bracketing positions are obtained with
-        `numpy.argwhere`, so they are 2D index arrays, and they are
-        used directly as the bounds of the slices passed to
-        `numpy.interp`; the upper bound of a slice is exclusive.
-
         Returns
         -------
         float
@@ -102,16 +97,16 @@ class COG:
 
         diff_from_half = self.normalized_flux - 0.5
 
-        diff_from_half_low = np.abs(diff_from_half[diff_from_half<0])
-
-        diff_from_half_high = np.abs(diff_from_half[diff_from_half>0])
+        below = np.flatnonzero(diff_from_half < 0)
+        above = np.flatnonzero(diff_from_half > 0)
 
         # Positions of the samples closest to 0.5 from below and above.
-        low_idx = np.argwhere(diff_from_half == -diff_from_half_low.min())
+        low_idx = below[np.argmax(diff_from_half[below])]
+        high_idx = above[np.argmin(diff_from_half[above])]
 
-        high_idx = np.argwhere(diff_from_half == diff_from_half_high.min())
+        bracket = [low_idx, high_idx]
 
-        return np.interp(0.5, self.normalized_flux[low_idx:high_idx], self.radius[low_idx:high_idx])
+        return np.interp(0.5, self.normalized_flux[bracket], self.radius[bracket])
 
     def save(self, path):
         """
@@ -230,7 +225,7 @@ class COG:
 
 
 from photutils.aperture import aperture_photometry
-from typing import List, Dict, Tuple, Union, Optional
+from typing import Dict, Union
 
 from numpy.typing import ArrayLike
 from photutils.isophote import EllipseGeometry

@@ -19,17 +19,13 @@ are in the image counts and are converted with the zero points of the
 field.
 """
 
-
-from typing import List, Union
-from attila.tiling.sources import Source, Sources
+from attila.tiling.sources import Sources
 from attila.field.field import Field
 import numpy as np
 import pandas as pd
-from functools import partial
 from photutils.centroids import centroid_quadratic
 
 from astropy.wcs import WCS
-
 
 import astropy.units as u
 
@@ -44,10 +40,10 @@ def _compute_mag(eps, zpt, A, dist):
     that is the apparent magnitude `-2.5 log10(eps) + zpt`, corrected
     for the extinction `A` and reduced by the distance modulus
     `5 log10(dist / 10 pc)`. With the true distance of the source this
-    is its absolute magnitude. With `dist` equal to 1 pc, the value
+    is its absolute magnitude. With `dist` equal to 10 pc, the value
     used by `Properties` when the field has no distance, the distance
-    term vanishes and the result is the extinction-corrected apparent
-    magnitude plus 5.
+    modulus vanishes and the result is the extinction-corrected
+    apparent magnitude.
 
     Parameters
     ----------
@@ -228,7 +224,7 @@ class Properties:
         # No extinction correction until the caller assigns `A`.
         self.A = np.zeros((len(self.sources), len(self.bands)))
 
-        # Aperture radius of `mag_aper`, in pixels.
+        # Aperture radius of `mag_aper`, in pixels (a deliberate choice).
         self.radius = 10
 
         # The order of this list is the order of the output columns.
@@ -308,9 +304,6 @@ class Properties:
         """
         Register a user-defined measurement (not implemented).
 
-        The method raises `NotImplementedError` at its first statement;
-        the lines that follow are never executed.
-
         Parameters
         ----------
         function : callable
@@ -323,10 +316,6 @@ class Properties:
         """
         raise NotImplementedError('This method is not implemented yet.')
 
-        function.__get__(self)
-
-        self.functions += [getattr(self, function.__name__)]
-
     def mag(self):
         """
         Compute the magnitude of every source inside its segment.
@@ -337,9 +326,9 @@ class Properties:
         the extinction `A` and the distance of the field.
 
         If the field has the attribute `distance` the result is an
-        absolute magnitude. Otherwise the distance is set to 1 pc and
-        the result is the extinction-corrected apparent magnitude plus
-        5 (see `_compute_mag`).
+        absolute magnitude. Otherwise the distance is set to 10 pc and
+        the result is the extinction-corrected apparent magnitude (see
+        `_compute_mag`).
 
         Returns
         -------
@@ -348,7 +337,7 @@ class Properties:
         """
 
         if hasattr(self.field, 'distance') is False:
-            dist = 1 * u.pc
+            dist = 10 * u.pc
         else:
             dist = self.field.distance
 
@@ -412,8 +401,7 @@ class Properties:
         Compute the peak surface brightness of every source.
 
         The peak of a source in a band is the largest value, in counts
-        per pixel, of its cutout multiplied by its segment, so the
-        pixels outside the segment count as 0. It is converted with
+        per pixel, of its cutout inside its segment. It is converted with
         `_compute_sb` exactly as in `sb_mean`.
 
         Returns
@@ -434,7 +422,7 @@ class Properties:
         for i, source in enumerate(self.sources):
             for j, image in enumerate(source.data):
 
-                eps[i, j] = np.nanmax(image.data * source.segment)
+                eps[i, j] = np.nanmax(np.where(source.segment, image.data, np.nan))
 
         sb_peak = np.zeros((len(eps), len(self.bands)))
         for i, _eps, _A in zip(range(len(eps)), eps, self.A):
@@ -657,7 +645,7 @@ class Properties:
         """
 
         if hasattr(self.field, 'distance') is False:
-            dist = 1 * u.pc
+            dist = 10 * u.pc
         else:
             dist = self.field.distance
 

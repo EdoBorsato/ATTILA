@@ -35,16 +35,13 @@ from photutils.isophote.geometry import EllipseGeometry
 from photutils.aperture import EllipticalAperture
 
 from attila.field.field import Field
-from attila.tiling.sources import Source, Sources
+from attila.tiling.sources import Source
 
 import matplotlib.pyplot as plt
-from shapely.plotting import plot_polygon
 
 from astropy.io import fits
 
-from typing import List, Dict, Tuple
-
-import pandas as pd
+from typing import List, Dict
 
 from matplotlib import colormaps as mcmaps
 from matplotlib import colors as mcolors
@@ -136,14 +133,14 @@ def read_AP_targets(targets_dict):
     ----------
     targets_dict : dict
         The AstroPhot targets, `{band: astrophot.image.Target_Image}`.
-        Every target is accessed through its `psf.data`.
 
     Returns
     -------
     dict
         For every band, a dictionary with the keys `data` (image),
         `noise` (square root of the variance), `mask` and `psf` (PSF
-        image), all 2D `numpy` arrays.
+        image), all 2D `numpy` arrays; `psf` is `None` for a target
+        without a PSF.
     """
 
     inputs_dict = {}
@@ -153,7 +150,10 @@ def read_AP_targets(targets_dict):
         inputs_dict[band]['data'] = target.data.detach().cpu().numpy()
         inputs_dict[band]['noise'] = np.sqrt(target.variance.detach().cpu().numpy())
         inputs_dict[band]['mask'] = target.mask.detach().cpu().numpy()
-        inputs_dict[band]['psf'] = target.psf.data.detach().cpu().numpy()
+        if target.has_psf:
+            inputs_dict[band]['psf'] = target.psf.data.detach().cpu().numpy()
+        else:
+            inputs_dict[band]['psf'] = None
 
     return inputs_dict
 
@@ -241,7 +241,7 @@ def AP_set_models(source:Source, targets_dict:Dict[str, ap.image.Target_Image]):
             )
 
         sky = ap.models.AstroPhot_Model(
-            name=f"sky level",
+            name="sky level",
             model_type="flat sky model",
             target=targets_dict[image.band],
         )
@@ -255,22 +255,6 @@ def AP_set_models(source:Source, targets_dict:Dict[str, ap.image.Target_Image]):
         models_dict[image.band] = groupmodel
 
     return models_dict, target_name
-
-def parse_AP_models(models_dict:Dict[str, ap.models.AstroPhot_Model]):
-    """
-    Placeholder for a parser of the AstroPhot models (not implemented).
-
-    Parameters
-    ----------
-    models_dict
-        The group models, `{band: AstroPhot_Model}`.
-
-    Raises
-    ------
-    NotImplementedError
-        Always.
-    """
-    raise NotImplementedError
 
 def AP_fit_models(models_dict:Dict[str, ap.models.AstroPhot_Model]):
     """
@@ -930,7 +914,7 @@ class ApGroupModelParser(dict):
 
             else:
                 sky = ap.models.AstroPhot_Model(
-                    name=f"sky level",
+                    name="sky level",
                     model_type="flat sky model",
                     target=target,
                     parameters=component['parameters'],
@@ -1128,11 +1112,11 @@ def add_component(models_dict, new_type, name, window, priors):
     The component is added, in every band where `name` is not already
     present, as a dictionary with the given model type, window and
     parameters, in the format of `ApGroupModelParser`. The centre of
-    the component is set to the centre of the window.
+    the component, if it has one, is set to the centre of the window.
 
     If `priors` is `None`, default parameter values and limits are
-    created for the requested model type the first time they are
-    needed; the same dictionary is then used for all the bands.
+    created for the requested model type. Every band receives its own
+    copy of the parameters and of the window.
 
     Parameters
     ----------
@@ -1202,16 +1186,18 @@ def add_component(models_dict, new_type, name, window, priors):
         if name not in component_names:
 
             if window is None:
-                raise ValueError("Scemo!!")
-            else:
-                window = window
+                raise ValueError("A window is needed to add a new component.")
 
-            priors['center']['value'] = window['center']
+            band_priors = deepcopy(priors)
+
+            # The flat sky has no centre.
+            if 'center' in band_priors:
+                band_priors['center']['value'] = window['center']
 
             models_dict[band][name] = {
                 'model_type': new_type,
-                'window': window,
-                'parameters': priors,
+                'window': deepcopy(window),
+                'parameters': band_priors,
             }
 
     return models_dict
@@ -1355,7 +1341,7 @@ class EditComponent:
             value=self.model_type
         )
         self.sliders = [self.dropdown]
-        self.get_paramter_widgets()
+        self.get_parameter_widgets()
 
         self.dropdown.observe(self.update_type, names='value')
 
@@ -1369,7 +1355,7 @@ class EditComponent:
         # self.reject_button.on_click(self.reject_changes)
 
 
-    def get_paramter_widgets(self):
+    def get_parameter_widgets(self):
         """
         Build the sliders of the current model type and connect them.
 
@@ -1447,7 +1433,7 @@ class EditComponent:
         for band in self.models_dict.keys():
             self.component = _update_component(self.component, self.model_type, None)
 
-        self.get_paramter_widgets()
+        self.get_parameter_widgets()
         self.refresh_display()
 
     def get_slider_value(self, change, parameter_name):
@@ -1511,369 +1497,3 @@ class EditComponent:
 
         for band in self.models_dict.keys():
             self.models_dict[band][self.name] = deepcopy(self.component)
-
-
-
-
-# Retired code, kept for reference. The display of the model, of the
-# component windows and the mask drawing / dilation that `PlotModel`,
-# `_plot_image` and `plot_window` provided are now handled by
-# `PlotApModel` and `_plot_window` in `attila.interactive.fitprep`.
-# `InteractiveWindowSelector` has no counterpart there.
-
-# from matplotlib import colormaps as mcmaps
-# from matplotlib.colors import Normalize 
-# from matplotlib.widgets import Button
-# from threading import Event
-# import shapely as sh
-# from shapely.plotting import plot_polygon
-# from attila.interactive.masking_segment import InteractiveMaskDrawer, InteractiveMaskDilator
-
-# def _plot_window_dict(ax, window_dict, pixel_scale, **kwargs):
-
-#     dx = window_dict['pixel_shape'][0]
-#     dy = window_dict['pixel_shape'][1]
-
-#     center_arcsec = window_dict['center']
-
-#     center_pix = [center_arcsec[0] / pixel_scale, center_arcsec[1] / pixel_scale]
-
-#     # ax.add_patch(plt.Rectangle((x0, y0), dx, dy, fill=False, edgecolor='C1', lw=2, **kwargs))
-
-#     x0 = center_pix[0] - dx / 2
-#     y0 = center_pix[1] - dy / 2
-
-
-#     rct = sh.Polygon([(x0, y0), (x0 + dx, y0), (x0 + dx, y0 + dy), (x0, y0 + dy)])
-#     plt_poly = plot_polygon(rct, ax=ax, add_points=False, ls='--', ec='C1', fc='none', hatch='//', alpha=1)
-
-#     return ax, plt_poly
-
-# class InteractiveWindowSelector:
-#     def __init__(self, fig, ax, pixelscale):
-#         self.fig = fig
-#         self.ax = ax
-#         self.pixelscale = pixelscale
-#         self.window_dict = None 
-#         self.clicks = []
-
-#         self.windows = []
-
-#     def on_click(self, event):
-
-#         # Handle the click event
-#         if event.inaxes == self.ax:
-
-#             if event.button == 1:  # Left click
-#                 self.clicks.append((event.xdata, event.ydata))
-
-#                 if len(self.clicks) == 1:
-
-#                     self.ax.plot(self.clicks[0][0], self.clicks[0][1], marker='o', mec='C1', mfc=None) 
-
-#                 elif len(self.clicks) == 2:
-#                     center = self.clicks[0]
-
-#                     diagonal = np.array(self.clicks[1])
-
-#                     dx = int(2 * abs(diagonal[0] - center[0]))
-#                     dy = int(2 * abs(diagonal[1] - center[1]))
-
-#                     numpy_pixelscale = self.pixelscale.detach().cpu().numpy()
-
-#                     center_arcsec = np.array(center) * np.array([numpy_pixelscale[0][0], numpy_pixelscale[1][1]])
-
-#                     # self.ax.figure.canvas.mpl_disconnect(self.cid)
-
-#                     self.window_dict = {
-#                         'center': center_arcsec,
-#                         'pixel_shape': [dx, dy],
-#                     }
-
-#                     self.center_plot = self.ax.plot(self.clicks[1][0], self.clicks[1][1], marker='x', mec='C1', mfc=None)
-#                     self.ax, self.plt_poly = _plot_window_dict(self.ax, self.window_dict, pixel_scale=numpy_pixelscale[0][0])
-
-#                     self.windows.append(self.window_dict)
-#                     self.fig.canvas.draw()
-
-#             elif event.button == 3:
-#                 self.clicks = []
-
-#                 self.center_plot[0].remove()
-
-#                 self.plt_poly.remove()
-
-#                 self.fig.canvas.draw()
-
-#             elif event.button == 2:  # Middle click
-#                 self.ax.figure.canvas.mpl_disconnect(self.cid)
-
-
-# def _plot_image(ax, image, vlims, colormaps, mask=None, **kwargs):
-
-#     if mask is not None:
-#         image = np.where(mask, 0, image)
-
-#     bottom_image = np.where(image < vlims[0], vlims[0], image)
-#     bottom_image = np.where(bottom_image > vlims[1], vlims[1], bottom_image)
-
-#     top_image = np.where(image > vlims[2], vlims[2], image)
-#     top_image = np.where(top_image < vlims[1], np.nan, top_image)
-
-#     ax.imshow(bottom_image, cmap=colormaps[0], vmin=vlims[0], vmax=vlims[1], origin='lower', **kwargs)
-
-#     ax.imshow(top_image, cmap=colormaps[1], vmin=vlims[1], vmax=vlims[2], origin='lower', **kwargs)
-
-#     return ax
-
-# def plot_window(ax, window, **kwargs):
-
-#     dx = window.pixel_shape[0].detach().cpu().numpy()
-#     dy = window.pixel_shape[1].detach().cpu().numpy()
-
-#     center_arcsec = window.center.detach().cpu().numpy()
-
-#     pixel_scale = window.pixelscale.detach().cpu().numpy()
-
-#     center_pix = [center_arcsec[0] / pixel_scale[0][0], center_arcsec[1] / pixel_scale[1][1]]
-
-#     x0 = center_pix[0] - dx / 2
-#     y0 = center_pix[1] - dy / 2
-
-#     ax.add_patch(plt.Rectangle((x0, y0), dx, dy, fill=False, edgecolor='C1', lw=2, **kwargs))
-
-#     return ax
-
-# class PlotModel:
-#     def __init__(self, results):
-#         self.results = results
-#         self.current_band = list(results.keys())[0]
-
-#         # reapply the standard masks
-
-#         for band in results.keys():
-#             results[band]['target'].mask = results[band]['mask']
-
-#         self.working_component_name = None
-
-#         self.dropdown_band = widgets.Dropdown(
-#             options=list(results.keys()),
-#             description='Band:',
-#             value=self.current_band
-#         )
-
-#         display(self.dropdown_band)
-
-#         self.models_dict = {band: ApGroupModelParser(self.results[band]['model']) for band in self.results.keys()}
-
-#         # Initialize the figure and axes
-#         self.fig, (self.ax_target, self.ax_model, self.ax_resi) = plt.subplots(1, 3, figsize=(15, 5))
-#         self.vmed = 10
-#         self.vmax = 50
-#         self.bottom_cmap = mcmaps['coolwarm']
-#         self.top_cmap = mcmaps['RdYlGn']
-
-#         # Load the initial band data
-#         self.load_band(self.current_band)
-
-#         # Observe changes in the dropdown
-#         self.dropdown_band.observe(self.monitor_band, names='value')
-
-#         self.selector = None
-#         self.masker = None
-
-        
-
-#     def load_band(self, band):
-#         """Load the data for the selected band."""
-#         result_band = self.results[band]
-#         self.model = result_band['model']
-#         self.target = result_band['target']
-#         self.model.target = self.target
-
-#         self.plot()
-
-#     def monitor_band(self, change):
-#         """Handle changes in the dropdown value."""
-#         new_band = change['new']
-#         if new_band != self.current_band:
-#             self.current_band = new_band
-#             self.load_band(new_band)
-        
-
-#     def plot(self):
-        
-#         target_data = self.target.data.detach().cpu().numpy()
-#         target_variance = self.target.variance.detach().cpu().numpy()
-
-#         target_noise = np.sqrt(target_variance)
-
-#         self.ax_target.imshow(target_data/target_variance, cmap='viridis')
-
-#         self.ax_target = _plot_image(
-#             self.ax_target, 
-#             target_data/target_noise, 
-#             vlims=[-3, self.vmed, self.vmax], 
-#             colormaps=[self.bottom_cmap, self.top_cmap],
-#             mask=self.target.mask.detach().cpu().numpy(),
-#         )
-
-#         if self.working_component_name is not None:
-
-#             if self.working_component_name in self.model.models.keys():
-
-#                 base_image = self.target.model_image()
-
-#                 for model in self.model.models.values():
-#                     if model.name != self.working_component_name:
-#                         continue
-
-#                     model_partial = model(image=base_image)
-
-#                 model_image = model_partial.data.detach().cpu().numpy()
-
-#                 self.ax_model = _plot_image(
-#                     self.ax_model,
-#                     model_image/target_noise,
-#                     vlims=[-3, self.vmed, self.vmax], 
-#                     colormaps=[self.bottom_cmap, self.top_cmap],
-#                 )
-
-#                 resi_image = target_data - model_image
-
-#                 self.ax_resi = _plot_image(
-#                     self.ax_resi,
-#                     resi_image/target_noise,
-#                     vlims=[-3, self.vmed, self.vmax], 
-#                     colormaps=[self.bottom_cmap, self.top_cmap],
-#                     mask=self.target.mask.detach().cpu().numpy(),
-#                 )
-
-#                 self.ax_target = plot_window(self.ax_target, self.model.models[self.working_component_name].window)
-
-#                 self.ax_model = plot_window(self.ax_model, self.model.models[self.working_component_name].window)
-
-#                 self.ax_resi = plot_window(self.ax_resi, self.model.models[self.working_component_name].window)
-
-#             else:
-
-#                 self.ax_model.axis('off')
-#                 self.ax_resi.axis('off')
-
-#                 # selector.cid = self.fig.canvas.mpl_connect('button_press_event', selector.on_click)
-
-#                 self.selector = InteractiveWindowSelector(self.fig, self.ax_target, self.target.pixelscale)
-
-#         else:
-
-#             base_image = self.target.model_image()
-
-#             model_total = self.model(image=base_image)
-
-#             model_image = model_total.data.detach().cpu().numpy()
-
-#             self.ax_model = _plot_image(
-#                 self.ax_model,
-#                 model_image/target_noise,
-#                 vlims=[-3, self.vmed, self.vmax], 
-#                 colormaps=[self.bottom_cmap, self.top_cmap],
-#             )
-
-#             resi_image = target_data - model_image
-
-#             self.ax_resi = _plot_image(
-#                 self.ax_resi,
-#                 resi_image/target_noise,
-#                 vlims=[-3, self.vmed, self.vmax], 
-#                 colormaps=[self.bottom_cmap, self.top_cmap],
-#                 mask=self.target.mask.detach().cpu().numpy(),
-#             )
-
-#         self.fig.canvas.draw()
-
-#     def plot_component(self, component_name):
-        
-#         self.working_component_name = component_name
-
-#         self.ax_target.clear()
-
-#         self.ax_model.clear()
-
-#         self.ax_resi.clear()
-
-#         self.plot()
-
-
-#     def edit_mask(self, which='target', zoom=(False, 100)):
-        
-#         self.ax_target.clear()
-
-#         self.ax_model.clear()
-
-#         self.ax_resi.clear()
-
-#         xlim = -0.1 * self.target.data.shape[0], self.target.data.shape[0] * 1.1
-#         ylim = -0.1 * self.target.data.shape[1], self.target.data.shape[1] * 1.1
-
-#         if zoom[0]:
-#             xlim = (xlim[0] + xlim[1]) /2. - zoom[1]/2., (xlim[0] + xlim[1]) /2. + zoom[1]/2.
-#             ylim = (ylim[0] + ylim[1]) /2. - zoom[1]/2., (ylim[0] + ylim[1]) /2. + zoom[1]/2.
-
-#         self.ax_target.set_xlim(xlim)
-#         self.ax_target.set_ylim(ylim)
-
-#         self.ax_model.set_xlim(xlim)
-#         self.ax_model.set_ylim(ylim)
-
-#         self.ax_resi.set_xlim(xlim)
-#         self.ax_resi.set_ylim(ylim)
-
-#         self.plot()
-
-#         if which == 'target':
-#             draw_axis = self.ax_target
-#         elif which == 'model':
-#             draw_axis = self.ax_model
-#         elif which == 'resi':
-#             draw_axis = self.ax_resi
-
-#         self.edit_mask_handle = InteractiveMaskDrawer(self.fig, draw_axis, self.target.mask.detach().cpu().numpy())
-
-#         # self.maskcid = self.fig.canvas.mpl_connect('button_press_event', self.masker.on_click)
-
-#         return self.edit_mask_handle
-    
-#     def dilate_mask(self, which='target'):
-
-#         self.ax_target.clear()
-
-#         self.ax_model.clear()
-
-#         self.ax_resi.clear()
-
-#         # xlim = -0.1 * self.target.data.shape[0], self.target.data.shape[0] * 1.1
-#         # ylim = -0.1 * self.target.data.shape[1], self.target.data.shape[1] * 1.1
-
-#         # self.ax_target.set_xlim(xlim)
-#         # self.ax_target.set_ylim(ylim)
-
-#         # self.ax_model.set_xlim(xlim)
-#         # self.ax_model.set_ylim(ylim)
-
-#         # self.ax_resi.set_xlim(xlim)
-#         # self.ax_resi.set_ylim(ylim)
-
-#         self.plot()
-
-#         if which == 'target':
-#             draw_axis = self.ax_target
-#         elif which == 'model':
-#             draw_axis = self.ax_model
-#         elif which == 'resi':
-#             draw_axis = self.ax_resi
-
-#         self.dilate_mask_handle = InteractiveMaskDilator(self.fig, draw_axis, self.target.mask.detach().cpu().numpy())
-
-#         # self.maskcid = self.fig.canvas.mpl_connect('button_press_event', self.masker.on_click)
-
-#         return self.dilate_mask_handle

@@ -35,38 +35,36 @@ isophotes, curves of growth and 1D Sersic fits.
 
 | Path | Lines | Content |
 | --- | ---: | --- |
-| `attila/pipelines.py` | 498 | Template of the three pipeline stages: `combine`, `detect`, `deblend`. |
+| `attila/pipelines.py` | 470 | Template of the three pipeline stages: `combine`, `detect`, `deblend`. |
 | `attila/attila_logger.py` | 26 | Package logger (console and `example.log`). |
-| `attila/field/field.py` | 485 | `Field`, `Image`, `MultibandImage`. |
-| `attila/tiling/tilingrid.py` | 1028 | `Tiling`, grid and sparse tile builders, `guess_shape`. |
-| `attila/tiling/tiles.py` | 491 | `BaseTile`, `ConvolutionTile`, `DetectionTile`. |
-| `attila/tiling/sources.py` | 1238 | `Source`, `Sources`, one folder per saved source. |
-| `attila/tiling/sources_dev.py` | 1369 | Development variant: flat file layout and zstd compression. |
-| `attila/abstract/abstract_things.py` | 473 | `AbstractBox`, `BaseBox` (older tile container). |
-| `attila/detection/detection.py` | 284 | `segment`, `DetectionBox`. |
-| `attila/deblending/deblending.py` | 271 | `deblend`, `DeblendingBox`, `MultiSegmentationImage`. |
-| `attila/properties/extinction.py` | 349 | `Extinction`. |
-| `attila/properties/properties.py` | 793 | `Properties`. |
-| `attila/utils/image_utils.py` | 211 | Unit conversions and small array helpers. |
-| `attila/packing/packing.py` | 458 | `Packing`: rectangle packing of source cutouts. |
-| `attila/packing/interactive.py` | 463 | `InteractivePlotter`: visual classification. |
-| `attila/fitting/deblend_2D.py` | 1879 | AstroPhot wrappers, `AP_deblend`, model editing widgets. |
-| `attila/fitting/isophote.py` | 963 | `Ellipse_isophote`, `IsophotesAnalysis`. |
-| `attila/fitting/COG.py` | 403 | `COG`, `AperturePhotometry`. |
-| `attila/fitting/profiles.py` | 1058 | 1D Sersic likelihoods and emcee fits. |
-| `attila/interactive/fitprep.py` | 1068 | `PlotTarget`, `PlotApModel`. |
-| `attila/interactive/masking_segment.py` | 835 | Interactive mask and segment editors. |
-| `attila/interactive/profile_masking.py` | 164 | Interactive masking of 1D profiles. |
-| `attila/mocks/mocks.py` | 280 | Stand-alone script simulating mock Sersic galaxies. |
+| `attila/field/field.py` | 481 | `Field`, `Image`, `MultibandImage`. |
+| `attila/tiling/tilingrid.py` | 1015 | `Tiling`, grid and sparse tile builders, `guess_shape`. |
+| `attila/tiling/tiles.py` | 473 | `BaseTile`, `ConvolutionTile`, `DetectionTile`. |
+| `attila/tiling/sources.py` | 1377 | `Source`, `Sources`, flat file layout, zstd compression. |
+| `attila/tiling/sources_dev.py` | 12 | Deprecated alias of `sources.py`, kept for old scripts. |
+| `attila/detection/detection.py` | 163 | `segment`. |
+| `attila/deblending/deblending.py` | 85 | `deblend`. |
+| `attila/properties/extinction.py` | 325 | `Extinction`. |
+| `attila/properties/properties.py` | 781 | `Properties`. |
+| `attila/utils/image_utils.py` | 205 | Unit conversions and small array helpers. |
+| `attila/packing/packing.py` | 457 | `Packing`: rectangle packing of source cutouts. |
+| `attila/packing/interactive.py` | 453 | `InteractivePlotter`: visual classification of UDG candidates. |
+| `attila/fitting/deblend_2D.py` | 1499 | AstroPhot wrappers, `AP_deblend`, model editing widgets. |
+| `attila/fitting/isophote.py` | 867 | `Ellipse_isophote`, `IsophotesAnalysis`. |
+| `attila/fitting/COG.py` | 398 | `COG`, `AperturePhotometry`. |
+| `attila/fitting/profiles.py` | 649 | 1D Sersic + sky likelihood and emcee fit (`FitProfile`). |
+| `attila/interactive/fitprep.py` | 1061 | `PlotTarget`, `PlotApModel`. |
+| `attila/interactive/masking_segment.py` | 830 | Interactive mask and segment editors. |
+| `attila/interactive/profile_masking.py` | 156 | Interactive masking of 1D profiles. |
+| `attila/mocks/mocks.py` | 254 | Stand-alone script simulating mock Sersic galaxies (stale). |
 | `profiling/` | | Profiling harness for the detection pipeline. |
-| `mtobjects/` | | Vendored MTObjects (C. Haigh) and comparison scripts in `mtobjects/core/`. |
 | `synphot_filters/` | | DECam, SDSS and Gaia filter transmission curves. |
 | `NOTES_future_features.md` | | Design notes: HEALPix tiling, model-based deblending. |
-| `KNOWN_ISSUES.md` | | Bugs and inconsistencies found by code review. |
+| `KNOWN_ISSUES.md` | | Open bugs and inconsistencies, and what was fixed. |
 
 Not tracked: `dustmaps/` (SFD maps, 129 MB), `attila.zip` (old
-snapshot), FITS / CSV / PNG products under `mtobjects/`, and
-`profiling/results/`.
+snapshot), `mtobjects/` (MTObjects comparison, not published yet),
+`archive/` (local copies of retired code) and `profiling/results/`.
 
 ## Requirements
 
@@ -76,7 +74,8 @@ Python 3.12 with `numpy`, `scipy`, `astropy`, `photutils`, `shapely`,
 
 The fitting and interactive modules also need `astrophot`, `emcee`,
 `corner`, `ipywidgets`, `rasterio` and `rpack`. `attila/mocks` needs
-`autogalaxy`, and `attila/tiling/sources_dev.py` needs `zstandard`.
+`autogalaxy`, and `compress` / `decompress` in
+`attila/tiling/sources.py` need `zstandard`.
 
 There is no installer yet: scripts add the repository root to
 `sys.path`.
@@ -86,8 +85,20 @@ There is no installer yet: scripts add the repository root to
 The pipeline is driven by a script that lives next to the data and
 defines the stages with the parameters of that data set. It expects
 `<prefix>_<band>_data.fits` and `<prefix>_<band>_noise.fits`, a saved
-`Tiling`, and the `synphot_filters/` and `dustmaps/` folders.
-`attila/pipelines.py` is the in-package template of such a script.
+`Tiling`, and the `synphot_filters/` and `dustmaps/` folders (by
+default those at the repository root). `attila/pipelines.py` is the
+in-package template of such a script:
+
+```python
+from attila import pipelines
+
+sources = pipelines.deblend(
+    *pipelines.detect(*pipelines.combine(field, tiling))
+)
+```
+
+Tile shapes and overlaps are sky angles, stored in degrees. Images
+are in counts with one zero point per band (`field.zpt`).
 
 ## Profiling
 

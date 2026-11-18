@@ -17,8 +17,6 @@ contains it. The resulting array is assigned to
 `attila.properties.properties.Properties.A`.
 """
 
-
-
 from dustmaps.sfd import SFDQuery
 
 from astropy.coordinates import SkyCoord
@@ -26,11 +24,9 @@ from astropy.coordinates import SkyCoord
 from attila.field.field import Field
 from attila.tiling.sources import Sources
 
-from dust_extinction.parameter_averages import CCM89, F99, G23
-from synphot import units, config
+from dust_extinction.parameter_averages import G23
 from synphot import SourceSpectrum,SpectralElement,Observation,ExtinctionModel1D
-from synphot.models import BlackBodyNorm1D, ConstFlux1D
-from synphot.spectrum import BaseUnitlessSpectrum
+from synphot.models import ConstFlux1D
 from synphot.reddening import ExtinctionCurve
 
 from astropy import units as u
@@ -41,6 +37,9 @@ from tqdm import tqdm
 import shapely as sh
 
 from os import path
+
+# Root of the repository, which holds the filter curves and dust maps.
+_REPO_ROOT = path.dirname(path.dirname(path.dirname(path.abspath(__file__))))
 
 class Extinction:
     """
@@ -111,12 +110,10 @@ class Extinction:
             The dust map to use. Only `'sfd'` is implemented.
         filters_folder : str
             The folder with the filter transmission curves. `None`
-            means `../../synphot_filters`, relative to the current
-            working directory.
+            means the `synphot_filters` folder of the repository.
         extinction_maps_folder : str
-            The folder with the dust maps. `None` means
-            `../../dustmaps`, relative to the current working
-            directory.
+            The folder with the dust maps. `None` means the `dustmaps`
+            folder of the repository.
         bands : list of str
             The names of the filter files, without extension (for
             example `'SLOAN_SDSS.g'`), in the order wanted for the
@@ -131,12 +128,12 @@ class Extinction:
         self.extinction_map_name = extinction_map_name
 
         if filters_folder is None:
-            self.filters_folder = path.join('..', '..', 'synphot_filters')
+            self.filters_folder = path.join(_REPO_ROOT, 'synphot_filters')
         else:
             self.filters_folder = filters_folder
 
         if extinction_maps_folder is None:
-            self.extinction_maps_folder = path.join('..', '..', 'dustmaps')
+            self.extinction_maps_folder = path.join(_REPO_ROOT, 'dustmaps')
         else:
             self.extinction_maps_folder = extinction_maps_folder
 
@@ -165,22 +162,62 @@ class Extinction:
         self.ext = G23(Rv=3.1)
 
 
+    def _band_extinction(self, Ebv):
+        """
+        Return the extinction in every band for one reddening value.
+
+        The G23 curve gives the fraction of flux transmitted by the
+        dust at the wavelengths `wavs`. This is applied to the flat
+        reference spectrum, and the spectrum is observed through each
+        filter with and without the extinction
+        (`synphot.Observation.effstim`, in photons). The extinction is
+        the magnitude difference of the two,
+        `A = -2.5 log10(F_ext / F)`.
+
+        Parameters
+        ----------
+        Ebv : float
+            The reddening E(B-V) in magnitudes.
+
+        Returns
+        -------
+        numpy.ndarray
+            The extinction in magnitudes, one value per band, in the
+            order of `bands`.
+        """
+        # Fraction of flux transmitted by the dust at each wavelength.
+        frac_ext = self.ext.extinguish(self.wavs, Ebv=Ebv)
+
+        ext_model = ExtinctionCurve(
+            ExtinctionModel1D,
+            points=self.wavs,
+            lookup_table=frac_ext
+        )
+
+        self.sp_ext = self.sp * ext_model
+
+        A = np.zeros(len(self.bands))
+        for j, filter in enumerate(self.filters):
+
+            flux = Observation(self.sp, filter).effstim().value
+            flux_ext = Observation(self.sp_ext, filter).effstim().value
+
+            A[j] = -2.5 * np.log10(flux_ext / flux)
+
+        return A
+
     def compute_extinction_from_sources(self, sources:Sources):
         """
         Compute the extinction at the position of every source.
 
         This is the per-source alternative to the grid of
         `compute_extinction_from_tiling`; the pipeline in
-        `attila.pipelines` uses the grid. The steps written here are:
-        the pixel centre of every source is converted to sky
-        coordinates, E(B-V) is read from the dust map at each position
-        and the band values are derived as in
-        `compute_extinction_from_tiling`, storing them in the attribute
-        `A` with one row per source and one column per band.
-
-        The method reads the WCS from `self.sources`, an attribute that
-        this class does not define, and identifies the column of each
-        filter through `filter.name`.
+        `attila.pipelines` uses the grid. The pixel centre of every
+        source is converted to sky coordinates with the WCS of the
+        sources, E(B-V) is read from the dust map at each position and
+        the band values are derived with `_band_extinction`. They are
+        stored in the attribute `A`, with one row per source and one
+        column per band; nothing is returned.
 
         Parameters
         ----------
@@ -188,11 +225,11 @@ class Extinction:
             The sources whose pixel centres are looked up.
         """
 
-        self.A = np.zeros(len(sources), (len(self.bands)))
+        self.A = np.zeros((len(sources), len(self.bands)))
 
         centres = [source.centre for source in sources]
 
-        wcs = self.sources.wcs
+        wcs = sources.wcs
 
         ra_dec = np.asarray([wcs.all_pix2world(x, y, 0) for x, y in centres])
 
@@ -201,44 +238,15 @@ class Extinction:
         Ebvs = self.extinction_map(coords)
 
         for i, Ebv in tqdm(enumerate(Ebvs), total=len(Ebvs)):
-
-            frac_ext = self.ext.extinguish(self.wavs, Ebv=Ebv)
-
-            ext_model = ExtinctionCurve(
-                ExtinctionModel1D,
-                points=self.wavs,
-                lookup_table=frac_ext
-            )
-
-            self.sp_ext = self.sp * ext_model
-
-            for filter in self.filters:
-
-                mag = Observation(self.sp, filter).effstim().value
-                mag_ext = Observation(self.sp_ext, filter).effstim().value
-
-                self.A[i, self.bands.index(filter.name)] = abs(mag_ext - mag)
-
+            self.A[i] = self._band_extinction(Ebv)
 
     def compute_extinction_from_tiling(self, coord_list, regions):
         """
         Compute the extinction on a grid of sky positions.
 
         E(B-V) is read from the dust map at every position of
-        `coord_list`. For each of them the G23 curve gives the fraction
-        of flux transmitted at the wavelengths `wavs`; this is applied
-        to the flat reference spectrum, and the spectrum is observed
-        through each filter with and without the extinction
-        (`synphot.Observation.effstim`). The value stored for the band
-        is the absolute difference of the two effective stimuli.
-
-        `effstim` is called without a flux unit, so the two stimuli are
-        expressed in the default unit of `synphot` (PHOTLAM, a flux
-        density) and not in magnitudes. For the reference spectrum of
-        amplitude 1 their difference is close to `1 - 10**(-0.4 A)`,
-        with `A` the band extinction in magnitudes; this approaches `A`
-        only for small extinctions (about 0.92 `A` in the limit of
-        small `A`).
+        `coord_list` and converted to the extinction in every band with
+        `_band_extinction`.
 
         The results are stored in the attributes `regions`, `Ebvs` and
         `A_grid`; nothing is returned.
@@ -268,29 +276,7 @@ class Extinction:
         self.A_grid = np.zeros((len(coords), len(self.bands)))
 
         for i, Ebv in tqdm(enumerate(Ebvs), total=len(Ebvs)):
-
-            # Fraction of flux transmitted by the dust at each
-            # wavelength.
-            frac_ext = self.ext.extinguish(self.wavs, Ebv=Ebv)
-
-            ext_model = ExtinctionCurve(
-                ExtinctionModel1D,
-                points=self.wavs,
-                lookup_table=frac_ext
-            )
-
-            self.sp_ext = self.sp * ext_model
-
-            for filter, band in zip(self.filters, self.bands):
-
-                mag = Observation(self.sp, filter).effstim().value
-                mag_ext = Observation(self.sp_ext, filter).effstim().value
-
-                self.A_grid[i, self.bands.index(band)] = abs(mag - mag_ext)
-
-        # return A_grid
-
-        # TODO: add the lookup for each source position.
+            self.A_grid[i] = self._band_extinction(Ebv)
 
     def apply_grid_to_sources(self, sources):
         """
@@ -300,31 +286,22 @@ class Extinction:
         box) is converted to (RA, Dec) with the WCS of the sources and
         searched among the `regions` stored by
         `compute_extinction_from_tiling`, using a spatial index
-        (`shapely.STRtree`) with the predicate `within`. The rows of
-        `A_grid` of the matching regions are returned.
-
-        The output has one row per (source, region) match, ordered by
-        source. It has one row per source, aligned with `sources`, only
-        if every source centre falls inside exactly one region: a
-        centre inside two overlapping regions gives two rows, and a
-        centre outside all the regions gives none.
-
-        The test is done in the plane of the (RA, Dec) values in deg,
-        with no spherical geometry.
+        (`shapely.STRtree`). A source inside several overlapping
+        regions takes the one with the lowest index; a source outside
+        every region takes the nearest one. The test is planar in
+        (RA, Dec).
 
         Parameters
         ----------
         sources : Sources
-            The sources whose pixel centres are looked up.
+            The sources to which the extinction is assigned.
 
         Returns
         -------
         numpy.ndarray
-            The extinction values of `A_grid` for the matches, shape
-            `(n_matches, n_bands)`.
+            The extinction in magnitudes, shape
+            `(n_sources, n_bands)`, in the order of `sources`.
         """
-
-        # A = np.zeros((len(sources), len(self.bands)))
 
         sources_coords = np.asarray([source.centre for source in sources])
 
@@ -335,15 +312,14 @@ class Extinction:
         points = [sh.geometry.Point(ra, dec) for ra, dec in ra_dec]
         tree = sh.strtree.STRtree(self.regions)
 
-        # `query` returns two rows: the indices of the points and the
-        # indices of the regions that contain them.
-        idxs = tree.query(points, predicate='within')
+        # Sources outside every region fall back on the nearest one.
+        region_idx = np.asarray(tree.nearest(points), dtype=int)
 
-        return self.A_grid[idxs[1]]
+        # `query` returns one (point, region) pair per match; keep the
+        # lowest region index for points inside several regions.
+        point_idx, matched_idx = tree.query(points, predicate='within')
+        order = np.lexsort((matched_idx, point_idx))
+        unique_points, first = np.unique(point_idx[order], return_index=True)
+        region_idx[unique_points] = matched_idx[order][first]
 
-
-
-
-
-
-
+        return self.A_grid[region_idx]

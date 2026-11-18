@@ -12,40 +12,31 @@ saves / loads the collection in a light on-disk format. The later
 steps (extinction, properties, deblending, 2D fits) work on these
 objects.
 
-On-disk layout of this module: one folder per source,
-`<root>/sources/source_<previous_label>_<label>/`, containing
-`segmap.npy`, `det_arr.npy` and `metadata.json`.
-
-The module `attila.tiling.sources_dev` is a development variant of
-this one. It differs in the on-disk layout (flat files
-`source_<previous_label>_<label>.<name>` in a single folder instead
-of one folder per source) and in providing the zstd helpers
-`compress` and `decompress`.
+The on-disk layout is flat: the files of a source are
+`<root>/sources/source_<previous_label>_<label>.segmap.npy`,
+`...det_arr.npy` and `...metadata.json`, all in the same folder.
+Collections written by earlier versions, with one folder per source
+(`source_<previous_label>_<label>/segmap.npy` and so on), can still be
+read by `Source.load_light`, `Sources.load_light` and
+`Sources.predict`. `compress` and `decompress` pack the many small
+files of a folder with zstd and a trained dictionary.
 """
 from photutils.segmentation import SegmentationImage
 import numpy as np
 from numpy.typing import ArrayLike
 
-import matplotlib.pyplot as plt
-
 from attila.field.field import Image, MultibandImage
 # from attila.packing.packing import BoundingBox_to_Polygon, Polygon_to_BoundingBox
 
 from photutils.aperture import BoundingBox
-from photutils.segmentation import Segment
 
 from astropy import units as u
 
-from scipy.spatial import KDTree
-
 from tqdm import tqdm
-
-from attila.attila_logger import logger
 
 import os
 from os import path
 
-import pickle
 import json
 
 from typing import Union, List, Optional
@@ -57,7 +48,6 @@ import shapely as sh
 from astropy.wcs import WCS
 from astropy.io import fits
 
-from numpy.typing import ArrayLike
 from astropy.coordinates import SkyCoord
 
 import warnings
@@ -139,16 +129,13 @@ def _get_bbox_image(image, bbox, wcs):
         The cutout, of the same type as `image`.
     """
 
-    # Astropy `Cutout2D` expects scalar world coordinates here;
-    # length-1 arrays can fail on newer versions when converted to
-    # pixel positions. `bbox.center` is in (y, x) order.
-    x_center = float(bbox.center[1])
-    y_center = float(bbox.center[0])
-    position = wcs.pixel_to_world(x_center, y_center)
+    position = wcs.pixel_to_world(float(bbox.center[1]), float(bbox.center[0]))
+    # Compute the size of the region in arcsec. `bbox.center` above
+    # is in (y, x) order.
 
     pixel_scale = np.mean([_ps.to(u.arcsec).value for _ps in wcs.proj_plane_pixel_scales()])
-    size_x = float((bbox.ixmax - bbox.ixmin) * pixel_scale)
-    size_y = float((bbox.iymax - bbox.iymin) * pixel_scale)
+    size_x = float(bbox.ixmax - bbox.ixmin) * pixel_scale  # Size in arcsec along the x axis.
+    size_y = float(bbox.iymax - bbox.iymin) * pixel_scale  # Size in arcsec along the y axis.
 
     return image.cutout(position=position, size=(size_y * u.arcsec, size_x * u.arcsec))
 
@@ -301,28 +288,35 @@ class Source:
         """
         Save the footprint, the detection cutout and the metadata.
 
-        The folder `filename` is created if missing and filled with
-        `segmap.npy` (the footprint as unsigned 8-bit integers),
-        `det_arr.npy` (the detection cutout as 32-bit floats, if
-        `keep_det_arr`) and `metadata.json` (label, area, the four edges
-        of the bounding box and the previous label). The image data
-        extracted with `get_data` are not saved.
+        Three flat files are written, using `filename` as a common
+        prefix: `<filename>.segmap.npy` (the footprint as unsigned 8-bit
+        integers), `<filename>.det_arr.npy` (the detection cutout as
+        32-bit floats, if `keep_det_arr`) and `<filename>.metadata.json`
+        (label, area, the four edges of the bounding box and the
+        previous label). The image data extracted with `get_data` are
+        not saved.
 
         Parameters
         ----------
         filename
-            The folder of the source.
+            The path prefix of the files of the source, without
+            extension.
         keep_det_arr
             Whether the detection-array cutout is saved too.
         """
 
-        if not path.exists(filename):
-            os.mkdir(filename)
+        # Previous layout, one folder per source:
+        # if not path.exists(filename):
+        #     os.mkdir(filename)
 
-        np.save(path.join(filename, f"segmap.npy"), self.segment.astype(np.uint8))
+        #np.save(path.join(filename, f"segmap.npy"), self.segment.astype(np.uint8))
+
+        np.save(filename + ".segmap.npy", self.segment.astype(np.uint8))
 
         if keep_det_arr:
-            np.save(path.join(filename, f"det_arr.npy"), self.det_arr.astype(np.float32))
+            #np.save(path.join(filename, f"det_arr.npy"), self.det_arr.astype(np.float32))
+            np.save(filename + ".det_arr.npy", self.det_arr.astype(np.float32))
+
 
         metadata = {
             "label": self.label, 
@@ -334,25 +328,42 @@ class Source:
             "previous_label": self.previous_label, 
             }
         
-        with open(path.join(filename, "metadata.json"), "w+") as handle:
+        #with open(path.join(filename, "metadata.json"), "w+") as handle:
+        with open(filename + ".metadata.json", "w+") as handle:
             json.dump(metadata, handle, indent=4)
 
+        
+    # def save_full(self, filename: str) -> None:
+
+    #     self.save_light(filename)
+
+    #     if "array" in self.data_types:
+    #         np.save(path.join(filename, f"data.npy"), self.data)
+
+    #     if "image" in self.data_types:
+    #          with open(path.join(filename, "image") + '.pkl', 'wb') as file:
+    #             pickle.dump(self.data, file)
+
     @classmethod
-    def load_light(cls, filename: str, keep_det_arr: bool) -> None:
+    def load_light(cls, filename: str, keep_det_arr: bool) -> "Source":
         """
         Load a source saved with `save_light`.
 
-        The footprint is read from `segmap.npy` as a boolean array. If
-        `keep_det_arr` is True, `det_arr` is read from `det_arr.npy` and
-        cast to boolean; otherwise the boolean footprint is used in its
-        place.
+        The footprint is read from `<filename>.segmap.npy` as a boolean
+        array. If `keep_det_arr` is True, `det_arr` is read from
+        `<filename>.det_arr.npy` as 32-bit floats; otherwise the
+        boolean footprint is used in its place. If `filename` is a
+        folder, the files `segmap.npy`, `det_arr.npy` and
+        `metadata.json` inside it are read instead (the layout of
+        earlier versions).
 
         Parameters
         ----------
         filename
-            The folder of the source.
+            The path prefix of the files of the source, without
+            extension, or the folder of the source.
         keep_det_arr
-            Whether `det_arr.npy` is read.
+            Whether the `.det_arr.npy` file is read.
 
         Returns
         -------
@@ -360,16 +371,20 @@ class Source:
             The loaded source.
         """
 
-        with open(filename+"/metadata.json") as handle:
+        # One folder per source in the old layout, a common file prefix
+        # in the current one.
+        sep = "/" if path.isdir(filename) else "."
+
+        with open(filename + sep + "metadata.json") as handle:
             metadata = json.load(handle)
 
         if keep_det_arr:
-            det_arr = np.load(filename+"/det_arr.npy").astype(bool)
+            det_arr = np.load(filename + sep + "det_arr.npy").astype(np.float32)
         else:
-            det_arr = np.load(filename+"/segmap.npy").astype(bool)
+            det_arr = np.load(filename + sep + "segmap.npy").astype(bool)
 
         return cls(
-            segment = np.load(filename+"/segmap.npy").astype(bool),
+            segment = np.load(filename + sep + "segmap.npy").astype(bool),
             det_arr = det_arr,
             label = metadata["label"],
             area = metadata["area"],
@@ -381,6 +396,22 @@ class Source:
             ),
             previous_label = metadata["previous_label"]
         )
+    
+    # @classmethod
+    # def load_full(cls, filename: str) -> None:
+            
+    #         source = cls.load_light(filename)
+    
+    #         if path.exists(path.join(filename, "data.npy")):
+    #             source.data = np.load(path.join(filename, "data.npy"))
+    #             source.data_types.append("array")
+    
+    #         if path.exists(path.join(filename, "image.pkl")):
+    #             with open(path.join(filename, "image.pkl"), 'rb') as file:
+    #                 source.data = pickle.load(file)
+    #                 source.data_types.append("image")
+    
+    #         return source
 
     def drop_det_array(self) -> None:
         """Release the detection-array cutout by setting it to None."""
@@ -499,7 +530,7 @@ class Sources:
     def sort_by_area(self):
         """Sort the sources in place by decreasing area."""
         self.sources = sorted(self.sources, key=lambda x: x.area)[::-1]
-
+    
     def sources_from_radius(self, source, size, deblending_radius, return_sources=False):
         """
         Build a combined source from a source and its neighbours.
@@ -712,8 +743,6 @@ class Sources:
         else:
             raise ValueError("Coordinates need to be in a SkyCoord object")
 
-        # source = self.sources[int(np.where([s.label == label for s in self.sources])[0][0])]
-
         if deblending_radius > size/2.:
             raise ValueError("Deblending radius must be smaller than the size of the source")
 
@@ -745,8 +774,6 @@ class Sources:
         else: 
             for s in self.sources:
                 other_sources.append(s)
-
-        # other_sources = Sources([s for s in self.sources if ((s.label != label) & (s.previous_label != previous_label))], self.header)
 
         bboxes = [s.bbox for s in other_sources]
 
@@ -842,7 +869,7 @@ class Sources:
 
 
     @classmethod
-    def from_segmentation_image(cls, segmap: SegmentationImage, full_det_arr: ArrayLike, header) -> None:
+    def from_segmentation_image(cls, segmap: SegmentationImage, full_det_arr: ArrayLike, header) -> "Sources":
         """
         Build the collection from a full-mosaic segmentation map.
 
@@ -893,12 +920,10 @@ class Sources:
                 )
             )
 
-            sources = cls(sources_list, header)
-
-        return sources
+        return cls(sources_list, header)
     
     @classmethod
-    def from_deblend(cls, sources) -> None:
+    def from_deblend(cls, sources) -> "Sources":
         """
         Build a new collection from the deblending of each source.
 
@@ -971,26 +996,24 @@ class Sources:
         """
         Find the stored sources whose bounding box touches a region.
 
-        Only the `metadata.json` files in `<path_to_detection>/sources/`
-        are read, one sub-folder per source, so that the sources to load
-        can be selected without loading the whole collection. The
-        entries of the folder named `source_<previous_label>_<label>`
-        define the identifiers; the bounding boxes are read from every
-        entry of the folder, in the same order.
+        The bounding box of every source stored in
+        `<path_to_detection>/sources/` is read from its metadata file,
+        `source_<id>.metadata.json` or, in the layout of earlier
+        versions, `source_<id>/metadata.json`. The identifiers are
+        `"<previous_label>_<label>"`.
 
         Parameters
         ----------
         finding_region : shapely.Geometry
             The region of interest in full-mosaic pixel coordinates.
         path_to_detection : str
-            The root folder written by `save_light`.
+            The root folder of the stored collection.
 
         Returns
         -------
         numpy.ndarray
-            The identifiers `"<previous_label>_<label>"` of the sources
-            whose bounding box intersects the region, usable as `ids` in
-            `load_light`.
+            The identifiers of the sources whose bounding box intersects
+            the region.
         """
 
         def json_open(filename):
@@ -1000,12 +1023,19 @@ class Sources:
             
         path_to_sources = path.join(path_to_detection, "sources")
 
-        sources_names = os.listdir(path_to_sources)
-        sources_ids = ['_'.join(name.split("_")[1:]) for name in sources_names if name.startswith("source_")]
-            
-        sources_paths = [path.join(path_to_sources, f) for f in sources_names]
-        
-        metadatas = [json_open(path.join(source_path, 'metadata.json')) for source_path in sources_paths]
+        sources_names = sorted({
+            name.split('.')[0] for name in os.listdir(path_to_sources)
+            if name.startswith("source_")
+        })
+        sources_ids = ['_'.join(name.split("_")[1:]) for name in sources_names]
+
+        metadatas = []
+        for name in sources_names:
+            source_path = path.join(path_to_sources, name)
+            if path.isdir(source_path):
+                metadatas.append(json_open(path.join(source_path, 'metadata.json')))
+            else:
+                metadatas.append(json_open(source_path + '.metadata.json'))
 
         bboxes = [BoundingBox(
             ixmin=metadata["ixmin"],
@@ -1025,14 +1055,15 @@ class Sources:
     
     def save_light(self, filename: str, keep_det_arr: bool=True) -> None:
         """
-        Save the collection in the light on-disk format.
+        Save the collection in the light, flat on-disk format.
 
         The folder `filename` and its sub-folder `sources` are created
-        if missing. Every source is saved by `Source.save_light` in the
-        folder `sources/source_<previous_label>_<label>`. If the
-        collection has the attribute `properties`, it is written to
-        `properties.csv`. The header is written to `header.hdr`,
-        overwriting an existing file.
+        if missing. Every source is saved by `Source.save_light` with
+        the file prefix `sources/source_<previous_label>_<label>`, so
+        that all the files lie in the same folder. If the collection has
+        the attribute `properties`, it is written to `properties.csv`.
+        The header is written to `header.hdr`, overwriting an existing
+        file.
 
         Parameters
         ----------
@@ -1047,12 +1078,9 @@ class Sources:
         if not path.exists(path.join(filename, "sources")):
             os.mkdir(path.join(filename, "sources"))
 
-        for source in self.sources:
+        for source in tqdm(self.sources):
 
             source_path = path.join(filename, "sources", "source") + f"_{source.previous_label}_{source.label}"
-
-            if not path.exists(source_path):
-                os.mkdir(source_path)
 
             source.save_light(source_path, keep_det_arr)
 
@@ -1063,24 +1091,23 @@ class Sources:
         
 
     @classmethod
-    def load_light(cls, filename: str, ids=None, keep_det_arr: bool=True) -> None:
+    def load_light(cls, filename: str, ids=None, keep_det_arr: bool=True) -> "Sources":
         """
         Load a collection saved with `save_light`.
 
-        The sources are read from `filename + "sources/"`, so `filename`
-        must end with a path separator. The header is read from
+        The sources are read from the `sources` sub-folder of
+        `filename`. If `ids` is None, every source of that folder is
+        loaded once, in sorted order of name. The header is read from
         `header.hdr` and, if `properties.csv` exists, it is loaded in
         the attribute `properties`.
 
         Parameters
         ----------
         filename
-            The root folder of the stored collection, ending with a path
-            separator.
+            The root folder of the stored collection.
         ids : iterable of str, optional
             The identifiers `"<previous_label>_<label>"` of the sources
-            to load, for example those returned by `predict`. If None
-            every entry of the `sources` folder is loaded.
+            to load. If None the whole `sources` folder is loaded.
         keep_det_arr
             Whether the detection-array cutouts are read (see
             `Source.load_light`).
@@ -1092,12 +1119,18 @@ class Sources:
         """
 
         sources_list = []
+        path_to_sources = path.join(filename, "sources")
+
         if ids is None:
-            names=os.listdir(filename+ "sources/")
+            filenames=os.listdir(path_to_sources)
+
+            # Each source owns up to three files sharing one prefix.
+            names = sorted({name.split('.')[0] for name in filenames})
+
         else:
             names=[f'source_{id}' for id in ids]
         for name in tqdm(names):
-            sources_list.append(Source.load_light(filename + "sources/" + name, keep_det_arr=keep_det_arr))
+            sources_list.append(Source.load_light(path.join(path_to_sources, name), keep_det_arr=keep_det_arr))
 
         header=fits.Header.fromfile(path.join(filename, "header.hdr"))
         sources = cls(sources_list, header)
@@ -1168,7 +1201,8 @@ def combine_sources(sources, reference_label, bbox=None):
         The `label` of the reference source among `sources`.
     bbox : photutils.aperture.BoundingBox
         The box of the combined source in full-mosaic pixel
-        coordinates. It must be given, despite the default.
+        coordinates. If None, the smallest box containing all the
+        sources is used.
 
     Returns
     -------
@@ -1176,12 +1210,15 @@ def combine_sources(sources, reference_label, bbox=None):
         The combined source.
     """
     
-    bbox, shape = bbox, (bbox.iymax - bbox.iymin, bbox.ixmax - bbox.ixmin)
+    if bbox is None:
+        bbox, shape = bbox_shape_of_neighbours(sources)
+    else:
+        shape = (bbox.iymax - bbox.iymin, bbox.ixmax - bbox.ixmin)
 
     large_segmap_data = np.zeros(shape)
     large_segmap_det_arr = np.zeros(shape)
 
-    relative_refence_label = 1
+    relative_reference_label = 1
 
     for i, source in enumerate(sources):
 
@@ -1206,33 +1243,135 @@ def combine_sources(sources, reference_label, bbox=None):
         large_segmap_data[cutout_iymin:cutout_iymax, cutout_ixmin:cutout_ixmax] += (i+1)*relative_segment_data
 
         if source.label == reference_label:
-            relative_refence_label = i+1
+            relative_reference_label = i+1
 
-    return Source(large_segmap_data, large_segmap_det_arr, label=relative_refence_label, area=0, bbox=bbox)
+    return Source(large_segmap_data, large_segmap_det_arr, label=relative_reference_label, area=0, bbox=bbox)
 
 def clean_stored_sources(path_to_sources: str) -> None:
     """
     Delete the stored detection-array cutouts of a collection.
 
-    The file `det_arr.npy` is removed from every source folder in
-    `path_to_sources + "sources/"`, to save disk space.
+    The files `<name>.det_arr.npy` are removed from the `sources`
+    sub-folder of `path_to_sources`, to save disk space.
 
     Parameters
     ----------
     path_to_sources
-        The root folder of the stored collection, ending with a path
-        separator.
+        The root folder of the stored collection.
     """
 
-    names = os.listdir(path_to_sources + "sources/")
+    sources_dir = path.join(path_to_sources, "sources")
 
-    for name in names:
-        path_to_det_arr = path_to_sources + "sources/" + name + "/det_arr.npy"
+    filenames=os.listdir(sources_dir)
+
+    names = sorted({name.split('.')[0] for name in filenames})
+
+    for name in tqdm(names):
+        path_to_det_arr = path.join(sources_dir, name + ".det_arr.npy")
 
         if os.path.exists(path_to_det_arr):
             os.remove(path_to_det_arr)
 
+def compress(input_dir: str, output_dir: str) -> None: 
+    """
+    Compress every file of a folder with zstd and a shared dictionary.
 
-   
+    A zstd dictionary of 300 KiB is trained on the first 1000 files of
+    `input_dir` (in the order returned by `os.listdir`) and written to
+    `output_dir + "_dict.zstd"`, next to the output folder. Every file
+    is then compressed with that dictionary and written to
+    `<output_dir>/<name>.zst`, where `<name>` is the full file name, so
+    that `decompress` restores the original names. A shared dictionary
+    is used because the files (one small set per source) are many,
+    small and similar. The output folder is created if missing.
 
+    Parameters
+    ----------
+    input_dir
+        The folder with the files to compress.
+    output_dir
+        The folder receiving the `.zst` files, without a trailing path
+        separator.
+    """
+
+    # Imported here so that `zstandard` is needed only for compression.
+    import zstandard as zstd
+
+    _files = os.listdir(input_dir)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    path_to_files = [path.join(input_dir, _f) for _f in _files]
+
+    sample_files = path_to_files[:1000]
+
+    samples = []
+    for _f in sample_files:
+        with open(_f, "rb") as f:
+            samples.append(f.read())
+
+    # Train a 300 KiB dictionary on the sample files.
+    dict_trainer = zstd.train_dictionary(300 * 1024, samples) 
+
+    with open(output_dir + '_dict.zstd', "wb") as f: 
+        f.write(dict_trainer.as_bytes())
+
+    with open(output_dir + "_dict.zstd", "rb") as f:
+        dict_data = zstd.ZstdCompressionDict(f.read())
+
+    cctx = zstd.ZstdCompressor(dict_data=dict_data)
+
+    for _f, _full in tqdm(zip(_files, path_to_files), total=len(_files)):
+
+        with open(_full, "rb") as f:
+            data = f.read()
+
+        compressed = cctx.compress(data)
+
+        output_filepath = path.join(output_dir, _f + '.zst')
+
+        with open(output_filepath, "wb") as fout:
+            fout.write(compressed)
+
+
+def decompress(compressed_dir: str, output_dir: str) -> None:
+    """
+    Decompress a folder written by `compress`.
+
+    The dictionary is read from `compressed_dir + "_dict.zstd"`. Every
+    `.zst` file of `compressed_dir` is decompressed and written to
+    `output_dir` under the same name without the `.zst` suffix. The
+    output folder is created if missing.
+
+    Parameters
+    ----------
+    compressed_dir
+        The folder with the `.zst` files, without a trailing path
+        separator.
+    output_dir
+        The folder receiving the decompressed files.
+    """
+
+    import zstandard as zstd
+
+    compressed_dict = compressed_dir + '_dict.zstd'
+    
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(compressed_dict, "rb") as _f:
+        dict_data = zstd.ZstdCompressionDict(_f.read())
+
+    dctx = zstd.ZstdDecompressor(dict_data=dict_data)
+
+    for filename in tqdm(os.listdir(compressed_dir)):
+        if filename.endswith(".zst"):
+            input_path = os.path.join(compressed_dir, filename)
+            output_path = os.path.join(output_dir, filename[:-4])
+
+            with open(input_path, "rb") as fin:
+                compressed_data = fin.read()
+                decompressed_data = dctx.decompress(compressed_data)
+
+            with open(output_path, "wb") as fout:
+                fout.write(decompressed_data)
 

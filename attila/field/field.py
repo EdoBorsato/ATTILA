@@ -8,9 +8,6 @@ scale) and the bands are collected in a `MultibandImage`. The same
 classes are used for the cutouts made around tiles and sources.
 """
 import numpy as np
-import numpy.typing as npt
-import pickle
-
 
 from astropy.wcs import WCS
 from astropy.io import fits
@@ -18,21 +15,14 @@ from astropy.nddata import Cutout2D
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 
-from functools import cached_property
-
-from typing import List, Dict, Tuple, Union, Optional, Iterator
+from typing import List, Dict, Tuple, Union, Iterator
 
 from attila.utils.image_utils import compute_pixel_scale
-
-from os import path
-
-from astropy.cosmology.realizations import Planck18
 
 from astropy.cosmology import units as cu
 
 from astropy.visualization import make_lupton_rgb
 
-from copy import deepcopy
 
 class Field:
     """
@@ -89,12 +79,20 @@ class Field:
             The file extension, including the dot.
         noise_type : str
             `"rms"` to read the `_noise` file, `"weights"` to read the
-            `_weights` file.
+            `_weights` file. The weights are not converted to an RMS.
         axis : int
             The index of the HDU, in each FITS file, from which the data
             and the header are read.
+
+        Raises
+        ------
+        ValueError
+            If `noise_type` is neither `"rms"` nor `"weights"`.
         """
-        
+
+        if noise_type not in ("rms", "weights"):
+            raise ValueError("noise_type must be either 'rms' or 'weights'")
+
         self.bands = list(obs_path_dict.keys())
 
         # self.obs_dict = {}
@@ -106,8 +104,10 @@ class Field:
 
             data_path = obs_path_dict[band] + "_data"+extension
 
-            data = fits.open(data_path)[axis].data
-            header = fits.open(data_path)[axis].header
+            # The files are left open: the arrays are memory-mapped.
+            hdu = fits.open(data_path)[axis]
+            data = hdu.data
+            header = hdu.header
 
             if noise_type == "rms":
                 noise_path = obs_path_dict[band] + "_noise"+extension
@@ -115,10 +115,6 @@ class Field:
             elif noise_type == "weights":
                 noise_path = obs_path_dict[band] + "_weights"+extension
                 noise = fits.open(noise_path)[axis].data
-
-            # print(noise_path)
-
-            header_copy = deepcopy(header)
 
             self.multibandimages.append(
                 Image(
@@ -151,7 +147,10 @@ class Field:
         distance to obtain the redshift in the given cosmology. The
         physical scale at that redshift, the inverse of
         `cosmology.arcsec_per_kpc_proper`, is stored for every band (the
-        value is the same for all bands). The results are stored in the
+        value is the same for all bands); it is the scale given by the
+        angular diameter distance, and this convention was chosen
+        because it matches the NED cosmology calculator. The results
+        are stored in the
         attributes `cosmology`, `distance`, `redshift` and
         `angular_scale_dict`.
 
@@ -416,11 +415,9 @@ class MultibandImage:
         origin in the lower left corner, the axis frame is hidden and
         the axes are stored in the attribute `ax`.
 
-        If `additional_plotting` contains the key `"detection"`, the
-        object stored under its key `"segment"` is overlaid with the
-        colour map `self.segment.cmap`; if it contains `"deblending"`,
-        the object under `"deblend"` is overlaid with
-        `self.deblend.cmap`.
+        If `additional_plotting` contains the keys `"detection"` or
+        `"deblending"`, the segmentation images stored under them are
+        overlaid with their own colour maps, as in `Image.plot`.
 
         Parameters
         ----------
@@ -469,10 +466,10 @@ class MultibandImage:
 
         if isinstance(additional_plotting, dict):  
             if "detection" in additional_plotting:
-                additional_plotting['segment'].imshow(ax=self.ax, cmap=self.segment.cmap, alpha=0.25)
+                additional_plotting["detection"].imshow(ax=self.ax, cmap=additional_plotting["detection"].cmap, alpha=0.25)
 
             if "deblending" in additional_plotting:
-                additional_plotting['deblend'].imshow(ax=self.ax, cmap=self.deblend.cmap, alpha=0.1)
+                additional_plotting["deblending"].imshow(ax=self.ax, cmap=additional_plotting["deblending"].cmap, alpha=0.1)
 
         self.ax.axis("off")
 
