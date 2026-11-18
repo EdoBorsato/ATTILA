@@ -17,7 +17,7 @@ import numbers
 
 import numpy as np
 
-from scipy.ndimage import grey_closing
+from scipy.ndimage import grey_closing, label
 
 from photutils.segmentation import detect_sources
 from photutils.segmentation import SegmentationImage
@@ -69,7 +69,8 @@ def segment(detection_array,
                     threshold,
                     remove_borders=False,
                     mask=None,
-                    fill=False):
+                    fill=False,
+                    merge_touching=False):
     """
     Segment a detection array into labelled sources.
 
@@ -114,6 +115,14 @@ def segment(detection_array,
     fill : bool
         If True, apply the 3 x 3 closing described above to the label
         image.
+    merge_touching : bool
+        If True, the segments that touch each other after the closing
+        (8-connectivity) are merged: the label image is replaced by
+        the connected regions of its non-zero pixels. Segments
+        separated by a gap of one pixel, which the closing fills,
+        therefore become one source. The footprints then no longer
+        depend on the numbering of the labels. This is what the
+        relabelling of the mosaic did in version 0.1.0.
 
     Returns
     -------
@@ -144,7 +153,9 @@ def segment(detection_array,
     if fill:
         segmap.data = grey_closing(segmap.data, size=(3, 3))
 
-        # threshmap = np.zeros(detection_array.shape, dtype=int)
+    if merge_touching:
+        merged, _ = label(segmap.data > 0, structure=np.ones((3, 3)))
+        segmap = SegmentationImage(merged)
 
     # else:
     #     closed_segmap = grey_closing(segmap.data, size=(4, 4))

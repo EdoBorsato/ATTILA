@@ -100,9 +100,14 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   the whole array at once (12 s against 4 s on the Hydra S mosaic):
   one segment of 6.5 million pixels is detected again on a cutout
   grown around it.
-- The smoothing differs from the rectangular path by up to 1e-3 in
-  S/N (checked on one 3000 pixel block), and the two paths treat the
-  image border differently; their catalogues were not compared.
+- Compared with version 0.1.0 on the central 6000 x 6000 pixels of
+  the Hydra S mosaic (threshold 3, 25 pixels, sigma 3): 3210 of the
+  3212 sources of 0.1.0 are recovered, 98.3% with an identical
+  footprint, and their magnitudes agree within 0.01 mag (the
+  extinction grids differ). The remaining differences are at the
+  image border, where the smoothing is not the same (2 small sources
+  only in 0.1.0), and in a corner of the crop that the rectangular
+  tiles did not cover (102 sources only in the new catalogue).
 - The cell polygons are in (RA, Dec) degrees and are not handled
   across RA = 0.
 - Deblending and properties still run per source, not per cell.

@@ -258,7 +258,9 @@ def _detect_healpix(output_detarray_dict: Dict, field: Field, tiling: HealpixTil
     `attila.tiling.healpix.detect_in_cells`: every source belongs to
     the cell that contains its peak, and a source cut by the border
     of a cutout is detected again on a larger one, so no mosaic of
-    labels is built and nothing is relabelled. The extinction grid is
+    labels is built and nothing is relabelled. Segments that touch
+    after the closing are merged (`segment(merge_touching=True)`), as
+    on a rectangular tiling. The extinction grid is
     made of the HEALPix cells of order 10 (3.4 arcmin), or of the
     cells of the tiling if they are smaller. The HEALPix cell of every
     source is written in the column `healpix_cell` of the properties.
@@ -284,11 +286,14 @@ def _detect_healpix(output_detarray_dict: Dict, field: Field, tiling: HealpixTil
     tuple
         The same six values as `detect`.
     """
+    # Touching segments are merged, as the relabelling of the mosaic
+    # does on a rectangular tiling.
     detection_function = partial(
         segment,
         nconn = nconn,
         threshold = threshold,
-        fill = True
+        fill = True,
+        merge_touching = True
         )
 
     with warnings.catch_warnings():

@@ -6,6 +6,8 @@
   detection by cell ownership (`detect_in_cells`), with no stitching
   of the tile segmentations. `pipelines.combine` and
   `pipelines.detect` accept a `HealpixTiling`.
+- Added `segment(merge_touching=True)`, which merges the segments
+  that touch after the closing, as the relabelling of the mosaic did.
 - Added `gaussian_smooth`, a separable Gaussian smoothing that
   ignores invalid pixels.
 
