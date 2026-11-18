@@ -46,10 +46,6 @@ with a small test; everything else comes from static reading.
 - `Image.cutout`: keeps the parent header next to the cutout WCS.
 - `combine_sources`: overlapping footprints are summed into labels
   that belong to no source.
-- `attila/mocks/mocks.py`: `sizes` is a flat array of length 2N used
-  as N pairs; `pixel_to_arcsec.to_value()` is called on a float; the
-  outputs are written inside the loop; the PSF path, the image path
-  and `ag.Kernel2D` are stale.
 
 ## 3. Open: inconsistencies
 
@@ -67,9 +63,7 @@ with a small test; everything else comes from static reading.
   maximum) and is applied through `np.vectorize`.
 - **Cosmology.** `Field.compute_physical` reads the distance as
   comoving and uses the angular-diameter (proper) scale, chosen to
-  match the NED calculator; `mocks.py` uses the comoving scale and
-  adds extinction and dimming where `Properties._compute_sb`
-  subtracts them.
+  match the NED calculator.
 - **Logging.** `attila_logger` calls `logging.basicConfig` at import
   and opens `example.log` in the working directory.
 - **Imports.** `isophote.py` imports from `interactive.fitprep`, so

@@ -22,3 +22,5 @@ mtobjects_summary.txt
 
 # Local archive of retired code
 archive/
+build/
+*.egg-info/

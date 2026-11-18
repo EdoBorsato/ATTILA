@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "attila"
+dynamic = ["version"]
+description = "Detect, deblend and fit low-surface-brightness galaxies."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Edoardo Borsato" }]
+dependencies = [
+    "numpy",
+    "scipy",
+    "astropy",
+    "photutils",
+    "shapely",
+    "pandas",
+    "matplotlib",
+    "tqdm",
+    "dustmaps",
+    "dust_extinction",
+    "synphot",
+]
+
+[project.optional-dependencies]
+# AstroPhot fits, isophotes, 1D profiles and the interactive tools.
+fitting = [
+    "astrophot",
+    "emcee",
+    "corner",
+    "ipywidgets",
+    "rasterio",
+    "rectangle-packer",
+]
+# Compressed source catalogues.
+compression = ["zstandard"]
+
+[project.urls]
+Repository = "https://github.com/EdoBorsato/ATTILA"
+
+[tool.setuptools.dynamic]
+version = { attr = "attila.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["attila*"]

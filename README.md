@@ -58,10 +58,10 @@ This repository is under active development.
 | `attila/interactive/fitprep.py` | 1061 | `PlotTarget`, `PlotApModel`. |
 | `attila/interactive/masking_segment.py` | 830 | Interactive mask and segment editors. |
 | `attila/interactive/profile_masking.py` | 156 | Interactive masking of 1D profiles. |
-| `attila/mocks/mocks.py` | 254 | Stand-alone script simulating mock Sersic galaxies (stale). |
 | `profiling/` | | Profiling harness for the detection pipeline. |
 | `synphot_filters/` | | DECam, SDSS and Gaia filter transmission curves. |
 | `NOTES_future_features.md` | | Design notes: HEALPix tiling, model-based deblending. |
+| `CHANGELOG.md` | | What changed in each version. |
 | `KNOWN_ISSUES.md` | | Open bugs and inconsistencies, and what was fixed. |
 
 Not tracked: `dustmaps/` (SFD maps, 129 MB), `attila.zip` (old
@@ -75,12 +75,20 @@ Python 3.12 with `numpy`, `scipy`, `astropy`, `photutils`, `shapely`,
 `synphot` for the detection pipeline.
 
 The fitting and interactive modules also need `astrophot`, `emcee`,
-`corner`, `ipywidgets`, `rasterio` and `rpack`. `attila/mocks` needs
-`autogalaxy`, and `compress` / `decompress` in
-`attila/tiling/sources.py` need `zstandard`.
+`corner`, `ipywidgets`, `rasterio` and `rpack`; `compress` /
+`decompress` in `attila/tiling/sources.py` need `zstandard`.
 
-There is no installer yet: scripts add the repository root to
-`sys.path`.
+Install the package in editable mode from a clone of the repository,
+so that the filter curves in `synphot_filters/` are found:
+
+```bash
+pip install -e .                        # detection pipeline
+pip install -e ".[fitting,compression]" # everything
+```
+
+The SFD dust maps are not in the repository: download them with
+`dustmaps` into a `dustmaps/` folder at the repository root, or pass
+`extinction_maps_folder` to `Extinction`.
 
 ## Running the detection pipeline
 
@@ -125,3 +133,7 @@ python -m pstats profiling/results/<run>/detect.prof
 
 Comments follow PEP 8 and docstrings follow PEP 257 with numpydoc
 sections, wrapped at 72 characters.
+
+## Licence
+
+BSD 3-Clause, see `LICENSE`.
