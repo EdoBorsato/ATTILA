@@ -266,6 +266,36 @@ hand-edited masks, on images with the AstroPhot neighbours removed
 and with a fixed centre. The failures are degeneracies between the
 profile, the sky and unmasked faint light, not a limit of speed.
 
+## 5d. Isolate, then measure (19 November 2026)
+
+Same 30 targets and cutouts. Every child of the segment is a free
+pixel model, a flat sky is fitted with the scene, and the target is
+measured on the data minus sky minus the models of the other
+children, with a curve of growth in circular annuli that stops where
+the g + r signal of three annuli in a row is below its error. Table
+and plot: `isolated_table.md`, `isolated_vs_profile.png`.
+
+Against the circularised profile fits of the paper, r band:
+
+| Measurement | Median | Scatter | Within 0.3 mag |
+| --- | ---: | ---: | ---: |
+| Flux inside the watershed segment | +0.69 mag | 0.84 | 6 of 30 |
+| Curve of growth on the isolated source | -0.10 mag | 0.39 | 16 of 30 |
+
+The half-light radius of the curve of growth follows the profile
+radius with 0.13 dex of scatter; the radius of the segment has 0.23
+dex and no relation with it for the faintest targets.
+
+Failures: in 8 targets the curve of growth does not stop before 90
+px and the flux is about 1 mag too bright (crude stopping rule,
+residual sky and unmasked faint light); 3 of the 6 targets that share
+their segment are wrong, two of them with no g flux left after the
+neighbours are subtracted.
+
+This supports the second use of scarlet2: deblending and isolation,
+with non-parametric measurements for the catalogue, and the profile
+fits kept for the selected targets.
+
 ## 6. Risks
 
 - **Speed on CPU.** 26133 scenes, each a few hundred iterations.
