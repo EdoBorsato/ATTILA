@@ -46,9 +46,10 @@ How a fit is set up:
   morphology. The morphology is a free pixel image by default;
   `SersicMorphology`, `GaussianMorphology` and a wavelet
   (`StarletMorphology`) also exist, and `PointSource` uses the PSF.
-- **Seeding.** `init.hierarchical_sources` finds footprints on
-  wavelet scales and returns a centre, spectrum and morphology for
-  each; it also accepts a list of positions.
+- **Seeding.** Version 0.5.1 has no source finder
+  (`init.hierarchical_sources`, named in the documentation, is not in
+  the installed package). `init.from_gaussian_moments` gives a
+  spectrum and a Gaussian morphology for a given position.
 - **Fit.** `scene.fit(obs, max_iter, e_rel)`, gradient descent with
   an optax optimiser. Only the parameters that are declared are
   fitted, so parts of a model can be held fixed.
@@ -184,6 +185,40 @@ AstroPhot and the photutils passes are removed or kept as options.
 **M6. Release.**
 Documentation, changelog, `jax` and `scarlet2` as an optional extra,
 version 0.3.0.
+
+## 5b. First results of M0 (19 November 2026)
+
+Environment `attila-jax`: scarlet2 0.5.1, JAX 0.12.1, CPU. 29 Hydra S
+segments (10 targets of the paper, 6 isolated, 8 blends, 3 of 10^4 to
+10^5 px, one of 2 x 10^5 px, one star), g and r, free pixel models,
+2000 iterations at most. Scripts, tables and images are in
+`profiling/results/m0_scarlet2/`.
+
+Timings:
+
+- One iteration takes 0.4 ms for a 45 px box, 1 ms at 100 px, 4 ms at
+  450 px, 10 ms at 500 px with 5 sources, 67 ms at 1150 px with 11
+  sources. Memory is 0.5 GB per process, 2.2 GB for the largest.
+- Fixed cost per scene, in a process that has already fitted one:
+  0.2 s when the scenes are padded to the same size, 0.7 s otherwise.
+- A typical scene costs 1 to 3 s. All 26133 segments: about 10 to 15
+  hours of one core, so 1 to 2 hours on this machine; a few minutes
+  if only the segments with several seeds are fitted.
+
+Quality:
+
+- `init.from_gaussian_moments` gave 11 px model boxes for most
+  sources; a free model cannot grow out of its box, and half of the
+  flux was lost. Taking the box and the first guess from the
+  watershed child of ATTILA fixes it: the low-surface-brightness
+  targets are fitted to the noise.
+- Free models also fit the noise (chi-square per pixel 0.55 to 0.8)
+  and absorb faint undetected neighbours inside their box.
+- Bright sources fit badly (chi-square per pixel 10 to 2500): their
+  cores hold saturated or corrupted pixels that are not masked.
+- Fluxes of the paper's targets: within about 0.1 to 0.3 mag of the
+  AstroPhot model image where checked, but 0.5 to 1.5 mag fainter
+  than the magnitudes of the 1D profile fits. Not understood yet.
 
 ## 6. Risks
 
