@@ -113,7 +113,7 @@ Measured on the central 6000 x 6000 pixels of the Hydra mosaic.
   26 s, 2.0 GB, 99 files and 51 MB. The two tables are identical
   (27307 sources). The wall time is set by the largest source.
 
-## 5. Open: HEALPix tiling (0.2.0, in development)
+## 5. Open: HEALPix tiling (0.2.0)
 
 - Memory on the Hydra S mosaic (21112 x 14611 pixels, images
   memory-mapped): the detection alone peaks 0.5 GB above the bare

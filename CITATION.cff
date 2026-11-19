@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use ATTILA, please cite the presentation paper."
 title: "ATTILA: multi-tAsking deTecTIon tool for Lsb gAlaxies"
 type: software
-version: "0.1.0"
-date-released: "2026-11-18"
+version: "0.2.0"
+date-released: "2026-11-19"
 license: BSD-3-Clause
 repository-code: "https://github.com/EdoBorsato/ATTILA"
 authors:

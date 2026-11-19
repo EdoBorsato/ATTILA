@@ -1,3 +1,3 @@
 """ATTILA: detect, deblend and fit low-surface-brightness galaxies."""
 
-__version__ = "0.2.0.dev0"
+__version__ = "0.2.0"

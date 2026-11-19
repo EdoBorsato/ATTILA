@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (in development)
+## 0.2.0 (19 November 2026)
 
 - Added `attila.tiling.healpix`: tiles defined as HEALPix cells and
   detection by cell ownership (`detect_in_cells`), with no stitching
