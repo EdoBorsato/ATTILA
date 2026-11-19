@@ -231,6 +231,41 @@ Quality:
   sky term fitted with the scene and a constrained or parametric
   model (Sersic) for the faint sources.
 
+## 5c. Sersic target with a fitted sky (19 November 2026)
+
+The magnitudes of the paper (`fitting/measure_parameters.py` in the
+results folder) include the calibration offset of `LS_offset.json`
+(0.28 mag in g, 0.41 in r), the Galactic extinction and the
+cosmological dimming, and are integrated to a limiting radius. The
+comparison below therefore uses the instrumental flux of the
+circularised profile fit, computed from its posterior samples.
+
+Test: 30 targets of the paper, 300 px cutouts (the 15 kpc of the
+paper), detections of other segments masked, the target a Sersic
+profile with free index, radius, ellipticity and centre, the other
+children of its segment free pixel models, and a flat sky per band
+fitted with the scene. Table and plot:
+`profiling/results/m0_scarlet2/sersic_table.md`,
+`sersic_vs_profile.png`.
+
+- The sky term is necessary: without it the Sersic profile grows to
+  absorb the background (median 3 mag too bright).
+- 11 of 30 fits converge. For these, scarlet2 minus profile fit is
+  +0.11 mag in g and +0.07 in r (scatter 0.27 and 0.23), the radius
+  is 12% smaller (scatter 0.13 dex) and the index 0.3 larger
+  (scatter 0.4).
+- 19 of 30 do not converge in 3000 iterations: the radius runs
+  beyond 40 px (10 fits) or the index reaches a bound (10 fits). All
+  6 targets that share their segment with another source are among
+  them.
+- A fit takes 4 to 18 s (7 ms per iteration for these cutouts).
+
+Reading: an unsupervised 2D Sersic fit on a cutout is less robust
+for these galaxies than the profile fit of the paper, which works on
+hand-edited masks, on images with the AstroPhot neighbours removed
+and with a fixed centre. The failures are degeneracies between the
+profile, the sky and unmasked faint light, not a limit of speed.
+
 ## 6. Risks
 
 - **Speed on CPU.** 26133 scenes, each a few hundred iterations.
