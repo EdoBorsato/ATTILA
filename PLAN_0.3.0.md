@@ -216,9 +216,20 @@ Quality:
   and absorb faint undetected neighbours inside their box.
 - Bright sources fit badly (chi-square per pixel 10 to 2500): their
   cores hold saturated or corrupted pixels that are not masked.
-- Fluxes of the paper's targets: within about 0.1 to 0.3 mag of the
-  AstroPhot model image where checked, but 0.5 to 1.5 mag fainter
-  than the magnitudes of the 1D profile fits. Not understood yet.
+- Fluxes of the paper's targets against the 1D profile fits. The
+  `sma` magnitude of `fitting_results.hdf5` integrates a circular
+  Sersic profile with the semi-major-axis radius, so the `circ`
+  magnitude is the one to compare with. For 9 targets, scarlet2 minus
+  `circ` (g, r), median and scatter:
+  - local sky subtracted (median of the undetected pixels of the
+    box): +0.65, +0.78 mag, scatter 0.4;
+  - no sky subtracted: -0.12, +0.10 mag, scatter 0.6 to 0.7;
+  - model boxes twice as large: +0.41, +0.76 mag, scatter 1 to 2.4,
+    with two fits that fail.
+  The total flux of a free pixel model is set by the sky level and by
+  the box, not by the data. Before any pipeline work the test needs a
+  sky term fitted with the scene and a constrained or parametric
+  model (Sersic) for the faint sources.
 
 ## 6. Risks
 
