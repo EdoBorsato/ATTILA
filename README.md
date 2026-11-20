@@ -141,6 +141,64 @@ sources = pipelines.deblend(
 Tile shapes and overlaps are sky angles, stored in degrees. Images
 are in counts with one zero point per band (`field.zpt`).
 
+### Tutorial
+
+A full run on a g and r field, from the images to the deblended
+catalogue. The images are `path/prefix_g_data.fits`,
+`path/prefix_g_noise.fits` and the same for r, on the same pixel
+grid; run the script from the folder where the output should go.
+
+```python
+from astropy import units as u
+from astropy.cosmology import Planck18
+
+from attila import pipelines
+from attila.field.field import Field
+from attila.tiling.tilingrid import Tiling
+
+# 1. Field: images and noise maps of every band, in counts.
+field = Field({"g": "path/prefix_g", "r": "path/prefix_r"})
+field.zpt = {"g": 30.0, "r": 30.0}
+
+# Optional: a distance turns the magnitudes into absolute ones.
+field.compute_physical(cosmology=Planck18, distance=51 * u.Mpc)
+
+# 2. Tiling: overlapping RA/Dec rectangles over the common footprint.
+tiling = Tiling(
+    field.multibandimages.property_dict("header"),
+    tile_shape_sky=(16.5 * u.arcmin, 16 * u.arcmin),
+    overlap_sky=1 * u.arcmin,
+)
+tiling.make_tiles()
+tiling.save("tiling")            # reload with Tiling.load("tiling")
+
+# 3-5. Detection image, detection and measurements, deblending.
+sources = pipelines.deblend(
+    *pipelines.detect(*pipelines.combine(field, tiling))
+)
+```
+
+The stages write their results under `./output/`:
+
+| Folder | Content |
+| --- | --- |
+| `output/detection/1_100/` | Detected sources (threshold 1, at least 100 connected pixels) and `properties.csv`. |
+| `output/deblend/1_100_10/` | Deblended sources (10 levels) and `properties.csv`. |
+
+The table of the deblended sources is `sources.properties`. Read a
+saved catalogue back with:
+
+```python
+from attila.tiling.sources import Sources
+
+deblended = Sources.load_light("output/deblend/1_100_10")
+deblended.properties.head()
+```
+
+The detection settings (Gaussian kernel of 2 pixels, threshold 1,
+100 connected pixels, 10 deblending levels) are fixed in
+`attila/pipelines.py`; copy it next to the data to change them.
+
 ## Profiling
 
 `profiling/profile_detection_pipeline.py` imports a driver script and
